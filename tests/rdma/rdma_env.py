@@ -13,7 +13,6 @@ the top-level directory.
 import os
 import subprocess
 import netifaces
-import time
 import argparse
 
 
@@ -24,7 +23,7 @@ def prepare_ib():
         outs, _ = p.communicate()
         print("Valkey Over RDMA probe modules of IB [FAILED]")
         print("---------------\n" + outs.decode() + "---------------\n")
-        os._exit(1);
+        os._exit(1)
 
     print("Valkey Over RDMA probe modules of IB [OK]")
 
@@ -45,12 +44,12 @@ def prepare_rxe(interface):
             print("\t~# git clone https://github.com/pizhenwei/rxe.git " + rxedir)
             print("\t~# cd " + rxedir)
             print("\t~# make")
-            os._exit(1);
+            os._exit(1)
 
         cmd = "insmod " + rxekmod
         p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
         if p.wait():
-            os._exit(1);
+            os._exit(1)
 
     print("Valkey Over RDMA install RXE [OK]")
 
@@ -61,7 +60,7 @@ def prepare_rxe(interface):
         outs, _ = p.communicate()
         print("Valkey Over RDMA install RXE [FAILED]")
         print("---------------\n" + outs.decode() + "---------------\n")
-        os._exit(1);
+        os._exit(1)
 
     print("Valkey Over RDMA add RXE device <%s> [OK]" % softrdma)
 
@@ -89,7 +88,7 @@ def setup_rdma(driver, interface):
         prepare_rxe(interface)
     else:
         print("rxe is currently supported only")
-        os._exit(1);
+        os._exit(1)
 
 
 # iterate /sys/class/infiniband, find any all virtual RDMA device, and remove them
@@ -135,11 +134,11 @@ if __name__ == "__main__":
         print("Or you may setup RXE manually in root privileged by commands:")
         print("\t~# modprobe rdma_rxe")
         print("\t~# rdma link add rxe0 type rxe netdev [IFACE]")
-        os._exit(1);
+        os._exit(1)
 
     if args.operation == "cleanup":
         cleanup_rdma()
     elif args.operation == "setup":
         setup_rdma(args.driver, args.interface)
 
-    os._exit(0);
+    os._exit(0)

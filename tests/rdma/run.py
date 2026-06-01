@@ -72,7 +72,7 @@ def test_rdma(ipaddr):
         if svr.wait(1):
              print("Valkey Over RDMA valkey-server runs less than 1s [FAILED]")
              return 1
-    except subprocess.TimeoutExpired as e:
+    except subprocess.TimeoutExpired:
         print("Valkey Over RDMA valkey-server start [OK]")
         pass
 
@@ -108,7 +108,7 @@ def test_exit(retval, install_rxe):
         cmd = rdma_env_py + " -o cleanup"
         subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE).wait()
 
-    os._exit(retval);
+    os._exit(retval)
 
 
 if __name__ == "__main__":
@@ -145,4 +145,4 @@ if __name__ == "__main__":
         if not retval:
             print("Valkey Over RDMA test over " + ipaddr + " [OK]")
 
-    test_exit(0, args.install_rxe);
+    test_exit(0, args.install_rxe)
