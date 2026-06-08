@@ -621,8 +621,8 @@ proc write_test_failures {} {
     set failures {}
     foreach failed $::failed_tests {
         if {[string match {*\[*TIMEOUT*\]*} $failed]} continue
-        if {[string match {*Sanitizer error*} $failed]} continue
-        if {[string match {*Valgrind error*} $failed]} continue
+        # if {[string match {*Sanitizer error*} $failed]} continue
+        # if {[string match {*Valgrind error*} $failed]} continue
         if {[string match {*Can't start*} $failed]} continue
         if {[string match {*Check for memory leaks*} $failed]} continue
 
@@ -656,6 +656,33 @@ proc write_test_failures {} {
     close $fp
 }
 
+proc write_raw_failed_tests {} {
+    # Dump the COMPLETE, unfiltered $::failed_tests list — including the
+    # Valgrind/Sanitizer/TIMEOUT/Can't-start/leak entries that
+    # write_test_failures intentionally drops — for inspection from the
+    # uploaded test-failures artifact. Gated on the same --failures-output
+    # flag, written beside the filtered JSON so it rides the existing upload.
+    if {$::failures_output_file eq ""} {
+        return
+    }
+
+    set escaped {}
+    foreach failed $::failed_tests {
+        lappend escaped "\"[string map {"\\" "\\\\" "\"" "\\\"" "\n" "\\n" "\r" "\\r" "\t" "\\t" "\b" "\\b" "\f" "\\f"} $failed]\""
+    }
+
+    set outdir [file dirname $::failures_output_file]
+    if {$outdir ne "."} {
+        file mkdir $outdir
+    }
+    # Derive name from the suite file (valkey.json -> valkey.raw.json) so the
+    # valkey and moduleapi runs in a shared job dir don't clobber each other.
+    set base [file rootname [file tail $::failures_output_file]]
+    set fp [open [file join $outdir "$base.raw.json"] w]
+    puts $fp "\[[join $escaped ","]\]"
+    close $fp
+}
+
 proc the_end {} {
     # TODO: print the status, exit with the right exit code.
     puts "\n                   The End\n"
@@ -668,6 +695,11 @@ proc the_end {} {
     # Write structured failures for automated detection
     if {[catch {write_test_failures} err]} {
         puts "Warning: Failed to write test failures: $err"
+    }
+
+    # Write the full unfiltered list for manual inspection
+    if {[catch {write_raw_failed_tests} err]} {
+        puts "Warning: Failed to write raw failed tests: $err"
     }
 
     if {[llength $::failed_tests]} {
