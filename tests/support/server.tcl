@@ -355,7 +355,11 @@ proc spawn_server {executable config_file stdout stderr args} {
         # ASAN_OPTIONS environment variable is for address sanitizer. If a test
         # tries to allocate huge memory area and expects allocator to return
         # NULL, address sanitizer throws an error without this setting.
-        set pid [exec /usr/bin/env ASAN_OPTIONS=allocator_may_return_null=1 {*}$cmd >> $stdout 2>> $stderr &]
+        # detect_leaks=1 explicitly enables LeakSanitizer's exit-time scan so a
+        # genuine (unreachable) leak is reported regardless of platform default.
+        # Reachable allocations rooted in globals (e.g. the live keyspace at
+        # shutdown) are not reported, so this does not flood normal teardowns.
+        set pid [exec /usr/bin/env ASAN_OPTIONS=allocator_may_return_null=1:detect_leaks=1 {*}$cmd >> $stdout 2>> $stderr &]
     }
 
     if {$::wait_server} {
