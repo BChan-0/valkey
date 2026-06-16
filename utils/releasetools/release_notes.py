@@ -31,8 +31,8 @@ CATEGORIES: List[str] = [
     "Build and Tooling",
 ]
 
-# Security fixes are not seeded in the unstable block — they are added at
-# promotion time from manually supplied CVE entries — but when present they
+# Security fixes are not seeded in the unstable block. They are added at
+# promotion time from manually supplied CVE entries, but when present, they
 # render first, ahead of the canonical categories.
 SECURITY_CATEGORY = "Security Fixes"
 
