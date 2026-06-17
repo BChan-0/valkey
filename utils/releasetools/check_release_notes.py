@@ -2,7 +2,7 @@
 """CI check: enforce release-notes labelling and Unreleased edits on PRs.
 
 Runs from .github/workflows/release-notes-check.yml for PRs targeting the
-``unstable`` branch. Two rules:
+``unstable`` branch. Three rules:
 
 1. A PR must carry exactly one of the labels ``release-notes`` or
    ``no-release-notes``. Zero labels or both is a failure.
@@ -14,6 +14,10 @@ Runs from .github/workflows/release-notes-check.yml for PRs targeting the
    promote any bullet it finds. (The net-new check needs a base to diff
    against, so it is only enforced when BASE_SHA is supplied, as it always is
    in CI.)
+3. A net-new bullet whose trailing ``(#N)`` references a PR number other than
+   this PR's is a mislabel and fails the check. A bullet that credits a handle
+   other than the PR author is only a warning, since release notes may
+   legitimately credit a co-author or proxy contributor.
 
 Inputs come from the environment so the workflow can pass GitHub Actions
 context directly:
@@ -49,13 +53,20 @@ RELEASE_LABEL = "release-notes"
 NO_RELEASE_LABEL = "no-release-notes"
 DEFAULT_FILE = "00-RELEASENOTES"
 
-# Matches a "(#123)" PR reference anywhere in a bullet, so we only suggest
-# appending the number to bullets that do not already carry one.
-_PR_REF_RE = re.compile(r"\(#\d+\)")
+# Matches a "(#123)" PR reference anywhere in a bullet. The capturing group
+# yields the bare number so we can both detect references (truthy `search`) and
+# extract them (`findall`) to compare against this PR's number.
+_PR_REF_RE = re.compile(r"\(#(\d+)\)")
 
-# Matches a "by @handle" author attribution anywhere in a bullet, so we only
-# suggest appending one to bullets that do not already carry it.
-_AUTHOR_RE = re.compile(r"by @[\w-]+")
+# Matches a "by @handle" author attribution anywhere in a bullet. The capturing
+# group yields the handle so we can compare it against this PR's author.
+_AUTHOR_RE = re.compile(r"by @([\w-]+)")
+
+# Matches a "(#123)" reference only at the END of a bullet. The canonical bullet
+# form is "* <desc> by @handle (#N)", so the trailing reference is the bullet's
+# own PR number; a mid-text "(#N)" is a cross-reference to another PR and must
+# not be mistaken for a mislabel. Used to validate the number against this PR.
+_TRAILING_PR_REF_RE = re.compile(r"\(#(\d+)\)\s*$")
 
 
 def parse_labels(raw: Optional[str]) -> List[str]:
@@ -171,6 +182,63 @@ def _suggest_authors(new_bullets: List[str], pr_author: Optional[str]) -> List[s
     return lines
 
 
+def _check_pr_refs(new_bullets: List[str], pr_number: Optional[str]) -> List[str]:
+    """Return failure lines for new bullets whose trailing ``(#N)`` is wrong.
+
+    The canonical bullet form ends with this PR's own number, so a trailing
+    ``(#N)`` that does not match *pr_number* is a mislabel (e.g. a copy/pasted
+    bullet still pointing at another PR). Mid-text ``(#N)`` cross-references are
+    ignored. Returns ``[]`` when nothing is wrong or *pr_number* is unknown.
+    """
+    if not pr_number:
+        return []
+    wrong: List[Tuple[str, str]] = []
+    for bullet in new_bullets:
+        match = _TRAILING_PR_REF_RE.search(bullet)
+        if match and match.group(1) != pr_number:
+            wrong.append((bullet.rstrip(), match.group(1)))
+    if not wrong:
+        return []
+    lines = [
+        "❌ {} new bullet(s) reference a PR number that is not this PR "
+        "(#{}). Fix the trailing `(#N)` to match this PR:".format(len(wrong), pr_number),
+        "",
+    ]
+    for text, found in wrong:
+        lines.append("    {}  ← says (#{}), expected (#{})".format(text, found, pr_number))
+    return lines
+
+
+def _check_authors(new_bullets: List[str], pr_author: Optional[str]) -> List[str]:
+    """Return warning lines for new bullets crediting someone other than the author.
+
+    Release notes may legitimately credit a co-author or proxy contributor, so a
+    mismatch is a *warning*, not a failure: it surfaces the likely-wrong handle
+    without blocking. Returns ``[]`` when nothing is suspect or *pr_author* is
+    unknown.
+    """
+    if not pr_author:
+        return []
+    suspect: List[Tuple[str, List[str]]] = []
+    for bullet in new_bullets:
+        handles = _AUTHOR_RE.findall(bullet)
+        if handles and pr_author not in handles:
+            suspect.append((bullet.rstrip(), handles))
+    if not suspect:
+        return []
+    lines = [
+        "",
+        "⚠️ {} new bullet(s) credit a handle other than this PR's author "
+        "(@{}). This is allowed (e.g. crediting a co-author), but double-check "
+        "the attribution is intentional:".format(len(suspect), pr_author),
+        "",
+    ]
+    for text, handles in suspect:
+        credited = ", ".join("@{}".format(h) for h in handles)
+        lines.append("    {}  ← credits {}, not @{}".format(text, credited, pr_author))
+    return lines
+
+
 def evaluate(
     labels: List[str],
     *,
@@ -262,14 +330,23 @@ def evaluate(
         )
         return False, messages
 
+    new_bullets = _new_bullets(head_text, base_text)
+
+    # A net-new bullet that references the wrong PR number is a
+    # mislabel, so block on it before reporting success.
+    wrong_ref_lines = _check_pr_refs(new_bullets, pr_number)
+    if wrong_ref_lines:
+        return False, wrong_ref_lines
+
     messages.append(
         "✅ PR is labelled `{}` and adds {} new release-note bullet(s).".format(
             RELEASE_LABEL, head_count - base_count
         )
     )
-    new_bullets = _new_bullets(head_text, base_text)
     messages.extend(_suggest_pr_refs(new_bullets, pr_number))
     messages.extend(_suggest_authors(new_bullets, pr_author))
+    # Crediting a different handle is allowed; surface it as a warning only.
+    messages.extend(_check_authors(new_bullets, pr_author))
     return True, messages
 
 
