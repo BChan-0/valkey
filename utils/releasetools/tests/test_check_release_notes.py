@@ -154,9 +154,11 @@ def test_suggests_pr_ref_for_new_bullet_without_one(tmp_path):
 
 
 def test_no_suggestion_when_bullet_already_has_ref(tmp_path):
+    # pr_number matches the bullet's (#1) so the wrong-PR check stays quiet and
+    # we are only exercising the "ref present -> no suggestion" path.
     _write(tmp_path, NOTES_WITH_BULLET)  # bullet already ends with (#1)
     ok, messages = crn.evaluate(
-        ["release-notes"], base_sha=None, repo_dir=str(tmp_path), pr_number="1234"
+        ["release-notes"], base_sha=None, repo_dir=str(tmp_path), pr_number="1"
     )
     assert ok
     assert not any("Suggested edit" in m for m in messages)
@@ -217,7 +219,10 @@ def test_no_author_suggestion_when_bullet_already_has_one(tmp_path):
         ["release-notes"], base_sha=None, repo_dir=str(tmp_path), pr_author="other"
     )
     assert ok
-    assert not any("@other" in m for m in messages)
+    # An attribution is present, so the "missing author" *suggestion* must not
+    # fire. (A non-blocking wrong-author warning is expected and tested
+    # separately in test_wrong_author_warns_but_passes.)
+    assert not any("credits the contributor" in m for m in messages)
 
 
 def test_no_author_suggestion_without_pr_author(tmp_path):
@@ -244,6 +249,125 @@ def test_author_suggestion_only_targets_net_new_bullet(tmp_path, monkeypatch):
     joined = "\n".join(messages)
     assert "* Added a flag by @dev (#2)" in joined
     assert "* Fixed a thing by @dev (#1)" not in joined
+
+
+NOTES_WRONG_PR = """preamble
+
+## Unreleased
+
+### Bug Fixes
+* Fixed a thing by @dev (#9999)
+
+### Behavior Changes
+"""
+
+NOTES_WRONG_AUTHOR = """preamble
+
+## Unreleased
+
+### Bug Fixes
+* Fixed a thing by @someoneelse (#1)
+
+### Behavior Changes
+"""
+
+
+def test_wrong_pr_number_fails(tmp_path):
+    # New bullet's trailing (#9999) does not match this PR (#1) -> fail.
+    _write(tmp_path, NOTES_WRONG_PR)
+    ok, messages = crn.evaluate(
+        ["release-notes"], base_sha=None, repo_dir=str(tmp_path), pr_number="1"
+    )
+    assert not ok
+    joined = "\n".join(messages)
+    assert "not this PR" in joined
+    assert "says (#9999), expected (#1)" in joined
+
+
+def test_correct_pr_number_passes(tmp_path):
+    _write(tmp_path, NOTES_WRONG_PR)
+    ok, _ = crn.evaluate(
+        ["release-notes"], base_sha=None, repo_dir=str(tmp_path), pr_number="9999"
+    )
+    assert ok
+
+
+def test_wrong_pr_number_only_checks_net_new(tmp_path, monkeypatch):
+    # The wrong-numbered bullet was already in the base, so it is not net-new
+    # and must not fail this PR -- only the newly added bullet matters.
+    head = NOTES_WRONG_PR.replace(
+        "* Fixed a thing by @dev (#9999)\n",
+        "* Fixed a thing by @dev (#9999)\n* Added a flag by @dev (#1)\n",
+    )
+    _write(tmp_path, head)
+    monkeypatch.setattr(crn, "_git_show", lambda ref, repo_dir: NOTES_WRONG_PR)
+    ok, _ = crn.evaluate(
+        ["release-notes"], base_sha="abc123", repo_dir=str(tmp_path), pr_number="1"
+    )
+    assert ok
+
+
+def test_mid_text_pr_ref_is_not_treated_as_mislabel(tmp_path):
+    # A cross-reference to another PR mid-bullet, with the correct trailing
+    # number, is legitimate and must not fail.
+    notes = NOTES_WRONG_PR.replace(
+        "* Fixed a thing by @dev (#9999)",
+        "* Revert the change from (#42) by @dev (#1)",
+    )
+    _write(tmp_path, notes)
+    ok, _ = crn.evaluate(
+        ["release-notes"], base_sha=None, repo_dir=str(tmp_path), pr_number="1"
+    )
+    assert ok
+
+
+def test_no_pr_check_without_pr_number(tmp_path):
+    _write(tmp_path, NOTES_WRONG_PR)
+    ok, _ = crn.evaluate(
+        ["release-notes"], base_sha=None, repo_dir=str(tmp_path), pr_number=None
+    )
+    assert ok
+
+
+def test_wrong_author_warns_but_passes(tmp_path):
+    # Bullet credits @someoneelse, PR author is @dev -> warning, still passes.
+    _write(tmp_path, NOTES_WRONG_AUTHOR)
+    ok, messages = crn.evaluate(
+        ["release-notes"], base_sha=None, repo_dir=str(tmp_path), pr_author="dev"
+    )
+    assert ok
+    joined = "\n".join(messages)
+    assert "other than this PR's author" in joined
+    assert "credits @someoneelse, not @dev" in joined
+
+
+def test_matching_author_no_warning(tmp_path):
+    _write(tmp_path, NOTES_WITH_BULLET)  # credited "by @dev"
+    ok, messages = crn.evaluate(
+        ["release-notes"], base_sha=None, repo_dir=str(tmp_path), pr_author="dev"
+    )
+    assert ok
+    assert not any("other than this PR's author" in m for m in messages)
+
+
+def test_author_warning_only_targets_net_new(tmp_path, monkeypatch):
+    # The mismatched-author bullet was already in the base -> no warning.
+    _write(tmp_path, NOTES_WRONG_AUTHOR)
+    monkeypatch.setattr(crn, "_git_show", lambda ref, repo_dir: NOTES_WRONG_AUTHOR)
+    # Head == base means no net-new bullet, so rule 2 would block first; add a
+    # net-new correctly-attributed bullet so we reach the author check.
+    head = NOTES_WRONG_AUTHOR.replace(
+        "* Fixed a thing by @someoneelse (#1)\n",
+        "* Fixed a thing by @someoneelse (#1)\n* Added a flag by @dev (#2)\n",
+    )
+    _write(tmp_path, head)
+    ok, messages = crn.evaluate(
+        ["release-notes"], base_sha="abc123", repo_dir=str(tmp_path), pr_author="dev"
+    )
+    assert ok
+    # Only the carried-over bullet credits @someoneelse, and it is not net-new,
+    # so no author warning should fire.
+    assert not any("other than this PR's author" in m for m in messages)
 
 
 def test_main_exit_codes(tmp_path, monkeypatch):
