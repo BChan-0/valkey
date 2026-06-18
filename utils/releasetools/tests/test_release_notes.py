@@ -101,6 +101,58 @@ def test_render_version_section_security_first():
     assert "* (CVE-2026-1) bad thing" in section
 
 
+SAMPLE_UNRECOGNIZED = """preamble
+
+## Unreleased
+
+### Bug Fixes
+* Fixed a real crash by @alice (#10)
+
+### Networking
+* Big networking change someone miscategorized by @bob (#11)
+
+### Bug Fix
+* Typo'd the category header, singular by @carol (#12)
+"""
+
+
+def test_unrecognized_categories_lists_only_noncanonical_with_bullets():
+    notes = rn.parse_unreleased(SAMPLE_UNRECOGNIZED)
+    # Networking and the singular "Bug Fix" typo are non-canonical and carry
+    # bullets; the canonical "Bug Fixes" is excluded.
+    assert rn.unrecognized_categories(notes) == ["Networking", "Bug Fix"]
+
+
+def test_unrecognized_categories_excludes_canonical_and_security():
+    notes = {
+        "Bug Fixes": ["* x (#1)"],
+        rn.SECURITY_CATEGORY: ["* (CVE-2026-1) y"],
+        "Empty Weird": [],  # non-canonical but no bullets -> ignored
+    }
+    assert rn.unrecognized_categories(notes) == []
+
+
+def test_render_keeps_unrecognized_category_verbatim_after_canonical():
+    notes = rn.parse_unreleased(SAMPLE_UNRECOGNIZED)
+    section = rn.render_version_section("9.1.0", "ga", "HIGH", "2026-06-11", notes)
+    # Nothing is dropped: every miscategorized bullet survives.
+    assert "Big networking change someone miscategorized by @bob (#11)" in section
+    assert "Typo'd the category header, singular by @carol (#12)" in section
+    assert "### Networking" in section
+    # Canonical category renders before the non-canonical ones.
+    assert section.index("### Bug Fixes") < section.index("### Networking")
+
+
+def test_promote_keeps_miscategorized_notes():
+    out = rn.promote(
+        SAMPLE_UNRECOGNIZED, version="9.1.0", stage="rc1", urgency="LOW", date="2026-06-11",
+    )
+    assert "Big networking change someone miscategorized by @bob (#11)" in out
+    # And the Unreleased block is still reset afterwards.
+    tail = out.split("## Unreleased", 1)[1]
+    assert "Big networking change" not in tail
+
+
 def test_render_invalid_urgency_and_stage():
     import pytest
 

@@ -57,6 +57,15 @@ def test_set_version_raises_when_macro_missing():
         bv.set_version('#define SERVER_NAME "valkey"\n', "9.1.0", "ga")
 
 
+def test_set_version_raises_when_macro_duplicated():
+    # Two definitions of VALKEY_VERSION -> not exactly one -> error, so a
+    # malformed version.h can't silently get a double rewrite.
+    doubled = VERSION_H + '#define VALKEY_VERSION "1.2.3"\n'
+    with pytest.raises(ValueError) as exc:
+        bv.set_version(doubled, "9.1.0", "ga")
+    assert "VALKEY_VERSION" in str(exc.value)
+
+
 def test_main_writes_file(tmp_path):
     path = tmp_path / "version.h"
     path.write_text(VERSION_H)
