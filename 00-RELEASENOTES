@@ -24,7 +24,7 @@ PR and append a bullet under the matching category below, in the form:
 
     * <human-readable description> by @<your-github-handle>
 
-The bullet does not need a PR number to pass the check. Once your PR is open, feel
+The bullet does need a PR number to pass the check. Once your PR is open, feel
 free to edit the bullet to add it:
 
     * <human-readable description> by @<your-github-handle> '(#1234)'
@@ -32,7 +32,8 @@ free to edit the bullet to add it:
 If your change is not user-facing, add the `no-release-notes` label instead. A CI
 check requires exactly one of these two labels, and a note here when `release-notes`
 is set. This block is promoted into a dated release section when a release is cut,
-so keep entries user-readable.
+so keep entries user-readable. Any additional categories will also be promoted, with
+a warning for visibility.
 -->
 
 ### Behavior Changes
