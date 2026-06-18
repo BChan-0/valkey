@@ -14,24 +14,27 @@ Runs from .github/workflows/release-notes-check.yml for PRs targeting the
    promote any bullet it finds. (The net-new check needs a base to diff
    against, so it is only enforced when BASE_SHA is supplied, as it always is
    in CI.)
-3. A net-new bullet whose trailing ``(#N)`` references a PR number other than
-   this PR's is a mislabel and fails the check. A bullet that credits a handle
-   other than the PR author is only a warning, since release notes may
-   legitimately credit a co-author or proxy contributor.
+3. Each net-new bullet must end with this PR's own ``(#N)`` and credit a
+   contributor with ``by @handle``. A missing PR number, a trailing ``(#N)``
+   that points at a different PR, or a missing attribution all fail the check.
+   Crediting a handle *other* than the PR author is allowed (release notes may
+   credit a co-author or proxy contributor) and only emits a warning.
 
 Inputs come from the environment so the workflow can pass GitHub Actions
 context directly:
 
     PR_LABELS         JSON array of label names (toJSON(... .labels.*.name))
     BASE_SHA          merge-base SHA to diff 00-RELEASENOTES against (rule 2)
-    PR_NUMBER         this PR's number; used to suggest appending "(#N)" to a
-                      new bullet that lacks a PR reference (optional)
-    PR_AUTHOR         this PR's author login; used to suggest appending
-                      "by @handle" to a new bullet that lacks one (optional)
+    PR_NUMBER         this PR's number; each net-new bullet must end with the
+                      matching "(#N)" (rule 3). When unset the PR-number check
+                      is skipped, so CI always supplies it.
+    PR_AUTHOR         this PR's author login; each net-new bullet must carry a
+                      "by @handle" attribution (rule 3). When unset the author
+                      check is skipped, so CI always supplies it.
     RELEASE_NOTES_FILE  path to the notes file (default: 00-RELEASENOTES)
     GITHUB_STEP_SUMMARY path the job-summary markdown is appended to (optional)
 
-Exits 0 when both rules pass, 1 on any violation, 2 on unexpected error.
+Exits 0 when all rules pass, 1 on any violation, 2 on unexpected error.
 """
 
 from __future__ import annotations
@@ -125,34 +128,56 @@ def _new_bullets(head_text: str, base_text: Optional[str]) -> List[str]:
     return new
 
 
-def _suggest_pr_refs(new_bullets: List[str], pr_number: Optional[str]) -> List[str]:
-    """Build "suggested edit" lines for new bullets that lack a ``(#N)`` ref.
+def _require_pr_refs(new_bullets: List[str], pr_number: Optional[str]) -> List[str]:
+    """Return failure lines for net-new bullets missing or misreferencing the PR number.
 
-    Returns markdown lines (possibly empty) prompting the contributor to append
-    this PR's number to each net-new bullet that does not already reference one.
+    Every net-new bullet must end with this PR's own ``(#N)``. A bullet with no
+    trailing reference is *missing* its number; one whose trailing reference is a
+    different number is *wrong* (e.g. a copy/pasted bullet still pointing at
+    another PR). Mid-text ``(#N)`` cross-references to other PRs are ignored.
+    Gated on *pr_number* being known -- it always is in CI; without it we cannot
+    say which number to require, so the check is skipped (returns ``[]``).
     """
     if not pr_number:
         return []
-    needing = [b for b in new_bullets if not _PR_REF_RE.search(b)]
-    if not needing:
-        return []
-    lines = [
-        "",
-        "ℹ️ Suggested edit: append this PR's number to your new bullet(s) so the "
-        "note links back here. Update {} to:".format(DEFAULT_FILE),
-        "",
-    ]
-    for bullet in needing:
-        lines.append("    {} (#{})".format(bullet.rstrip(), pr_number))
+    missing: List[str] = []
+    wrong: List[Tuple[str, str]] = []
+    for bullet in new_bullets:
+        match = _TRAILING_PR_REF_RE.search(bullet)
+        if match is None:
+            missing.append(bullet.rstrip())
+        elif match.group(1) != pr_number:
+            wrong.append((bullet.rstrip(), match.group(1)))
+    lines: List[str] = []
+    if missing:
+        lines.append(
+            "❌ {} new bullet(s) are missing this PR's number. Append `(#{})` to "
+            "the end of each bullet:".format(len(missing), pr_number)
+        )
+        lines.append("")
+        for text in missing:
+            lines.append("    {} (#{})".format(text, pr_number))
+    if wrong:
+        if lines:
+            lines.append("")
+        lines.append(
+            "❌ {} new bullet(s) reference a PR number that is not this PR "
+            "(#{}). Fix the trailing `(#N)` to match this PR:".format(len(wrong), pr_number)
+        )
+        lines.append("")
+        for text, found in wrong:
+            lines.append("    {}  ← says (#{}), expected (#{})".format(text, found, pr_number))
     return lines
 
 
-def _suggest_authors(new_bullets: List[str], pr_author: Optional[str]) -> List[str]:
-    """Build "suggested edit" lines for new bullets that lack a ``by @handle``.
+def _require_authors(new_bullets: List[str], pr_author: Optional[str]) -> List[str]:
+    """Return failure lines for net-new bullets lacking a ``by @handle`` attribution.
 
-    Returns markdown lines (possibly empty) prompting the contributor to append
-    this PR author's handle to each net-new bullet that does not already carry
-    an attribution, keeping the canonical ``* ... by @handle`` bullet format.
+    Every net-new bullet must credit a contributor. A bullet that credits a
+    handle *other* than *pr_author* is allowed (see :func:`_check_authors` for
+    the non-blocking warning); only a *missing* attribution fails here. The
+    suggested fix keeps the canonical ``* ... by @handle (#N)`` order. Gated on
+    *pr_author* being known -- it always is in CI; returns ``[]`` otherwise.
     """
     if not pr_author:
         return []
@@ -160,18 +185,16 @@ def _suggest_authors(new_bullets: List[str], pr_author: Optional[str]) -> List[s
     if not needing:
         return []
     lines = [
-        "",
-        "ℹ️ Suggested edit: append the author handle to your new bullet(s) so the "
-        "note credits the contributor. Update {} to:".format(DEFAULT_FILE),
+        "❌ {} new bullet(s) are missing a contributor attribution. Add "
+        "`by @{}` to each bullet:".format(len(needing), pr_author),
         "",
     ]
     attribution = "by @{}".format(pr_author)
     for bullet in needing:
         text = bullet.rstrip()
-        # Keep the canonical "* description by @handle (#N)" order: when a PR
-        # reference is already present, insert the attribution before it rather
-        # than after.
-        ref_match = _PR_REF_RE.search(text)
+        # Keep the canonical "* description by @handle (#N)" order: when a
+        # trailing PR reference is present, insert the attribution before it.
+        ref_match = _TRAILING_PR_REF_RE.search(text)
         if ref_match:
             suggestion = "{} {} {}".format(
                 text[: ref_match.start()].rstrip(), attribution, text[ref_match.start() :]
@@ -179,33 +202,6 @@ def _suggest_authors(new_bullets: List[str], pr_author: Optional[str]) -> List[s
         else:
             suggestion = "{} {}".format(text, attribution)
         lines.append("    {}".format(suggestion))
-    return lines
-
-
-def _check_pr_refs(new_bullets: List[str], pr_number: Optional[str]) -> List[str]:
-    """Return failure lines for new bullets whose trailing ``(#N)`` is wrong.
-
-    The canonical bullet form ends with this PR's own number, so a trailing
-    ``(#N)`` that does not match *pr_number* is a mislabel (e.g. a copy/pasted
-    bullet still pointing at another PR). Mid-text ``(#N)`` cross-references are
-    ignored. Returns ``[]`` when nothing is wrong or *pr_number* is unknown.
-    """
-    if not pr_number:
-        return []
-    wrong: List[Tuple[str, str]] = []
-    for bullet in new_bullets:
-        match = _TRAILING_PR_REF_RE.search(bullet)
-        if match and match.group(1) != pr_number:
-            wrong.append((bullet.rstrip(), match.group(1)))
-    if not wrong:
-        return []
-    lines = [
-        "❌ {} new bullet(s) reference a PR number that is not this PR "
-        "(#{}). Fix the trailing `(#N)` to match this PR:".format(len(wrong), pr_number),
-        "",
-    ]
-    for text, found in wrong:
-        lines.append("    {}  ← says (#{}), expected (#{})".format(text, found, pr_number))
     return lines
 
 
@@ -332,20 +328,21 @@ def evaluate(
 
     new_bullets = _new_bullets(head_text, base_text)
 
-    # A net-new bullet that references the wrong PR number is a
-    # mislabel, so block on it before reporting success.
-    wrong_ref_lines = _check_pr_refs(new_bullets, pr_number)
-    if wrong_ref_lines:
-        return False, wrong_ref_lines
+    # Every net-new bullet must carry this PR's number and a contributor
+    # attribution; a missing or wrong PR number, or a missing handle, fails the
+    # check. Collect both so the contributor sees every fix at once.
+    blocking = _require_pr_refs(new_bullets, pr_number)
+    blocking.extend(_require_authors(new_bullets, pr_author))
+    if blocking:
+        return False, blocking
 
     messages.append(
         "✅ PR is labelled `{}` and adds {} new release-note bullet(s).".format(
             RELEASE_LABEL, head_count - base_count
         )
     )
-    messages.extend(_suggest_pr_refs(new_bullets, pr_number))
-    messages.extend(_suggest_authors(new_bullets, pr_author))
-    # Crediting a different handle is allowed; surface it as a warning only.
+    # Crediting a different handle than the PR author is allowed; surface it as
+    # a non-blocking warning only.
     messages.extend(_check_authors(new_bullets, pr_author))
     return True, messages
 
