@@ -42,6 +42,7 @@ The CI check warns if you do.
 -->
 
 ### Behavior Changes
+* test 1 (behavior changes) by @BChan-0 (#22)
 
 ### New Features and Enhanced Behavior
 
@@ -54,5 +55,6 @@ The CI check warns if you do.
 ### Module API Changes
 
 ### Observability and Logging
+* test 2 (observability) by @BChan-0 (#22)
 
 ### Build and Tooling

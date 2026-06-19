@@ -51,6 +51,14 @@ jobs:
     # EDIT BEFORE PR: Guard against forks running the release machinery with org secrets.
     # if: github.repository == 'valkey-io/valkey'
     runs-on: ubuntu-latest
+    # === FORK TEST — DELETE this permissions block before moving to valkey-io/valkey ===
+    # The built-in GITHUB_TOKEN needs write scope to push release-prep/* and open
+    # the PR. In valkey-io/valkey the App token carries its own scopes, so the
+    # job inherits the top-level `permissions: contents: read` and this is unneeded.
+    permissions:
+      contents: write
+      pull-requests: write
+    # === end FORK TEST ===
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -59,16 +67,29 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
-      - name: Generate GitHub App token
+      # === FORK TEST — DELETE this step before moving to valkey-io/valkey ===
+      # No VALKEYRIE_BOT_* secrets exist in a personal fork, so the App-token step
+      # below fails immediately. For fork testing we skip token generation entirely
+      # and use the built-in GITHUB_TOKEN (scoped via the job `permissions` block
+      # above). The two steps below reference this id; see their FORK TEST notes.
+      - name: Use built-in GITHUB_TOKEN (fork test)
         id: app-token
-        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
-        with:
-          app-id: ${{ secrets.VALKEYRIE_BOT_APP_ID }}
-          private-key: ${{ secrets.VALKEYRIE_BOT_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: valkey
-          permission-contents: write
-          permission-pull-requests: write
+        run: echo "token=${{ github.token }}" >> "$GITHUB_OUTPUT"
+      # === end FORK TEST ===
+
+      # EDIT BEFORE PR: Restore the App-token step (uncomment) and DELETE the
+      # "Use built-in GITHUB_TOKEN (fork test)" step above. The downstream steps
+      # already read steps.app-token.outputs.token, so no other change is needed.
+      # - name: Generate GitHub App token
+      #   id: app-token
+      #   uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
+      #   with:
+      #     app-id: ${{ secrets.VALKEYRIE_BOT_APP_ID }}
+      #     private-key: ${{ secrets.VALKEYRIE_BOT_PRIVATE_KEY }}
+      #     owner: ${{ github.repository_owner }}
+      #     repositories: valkey
+      #     permission-contents: write
+      #     permission-pull-requests: write
 
       - name: Prepare release notes and version bump
         env:
