@@ -31,10 +31,22 @@ CATEGORIES: List[str] = [
     "Build and Tooling",
 ]
 
-# Security fixes are not seeded in the unstable block — they are added at
-# promotion time from manually supplied CVE entries — but when present they
+# Security fixes are never seeded in the unstable block: they are supplied at
+# release-cut time from the embargo CVE list (prepare_release --security-fix) and
 # render first, ahead of the canonical categories.
 SECURITY_CATEGORY = "Security Fixes"
+
+# The contributor list is generated from the merged-PR authors of the release
+# range (gen_contributors.py), deduplicated and alpha-sorted, not hand-edited.
+CONTRIBUTORS_SECTION = "Contributors"
+
+# Sections that are populated automatically at release time and therefore must
+# never be hand-added to the "## Unreleased" block. If one appears there it is
+# *ignored* at render time (the generated section is the source of truth) rather
+# than merged, which would otherwise emit a duplicate header. Callers (the CI
+# check and the release cut) surface a non-blocking warning so a maintainer
+# removes the stray section.
+RESERVED_SECTIONS = (SECURITY_CATEGORY, CONTRIBUTORS_SECTION)
 
 UNRELEASED_HEADER = "## Unreleased"
 
@@ -48,6 +60,11 @@ If your change is not user-facing, add the `no-release-notes` label instead. A C
 check requires exactly one of these two labels, and a note here when `release-notes`
 is set. The `.github/workflows/prepare-release.yml` workflow promotes this block into
 a dated release section when a release is cut, so keep entries user-readable.
+
+Do not add `### Security Fixes` or `### Contributors` sections here: they are
+generated automatically when a release is cut (security fixes from the embargo
+CVE list, contributors from the merged PRs), so anything you add under them is
+dropped. The CI check warns if you do.
 -->"""
 
 # Upgrade urgency legend rendered at the top of a release-branch notes file.
@@ -68,7 +85,8 @@ _CATEGORY_RE = re.compile(r"^###\s+(.*\S)\s*$")
 _H2_RE = re.compile(r"^##\s+\S")
 _DATED_SECTION_RE = re.compile(r"^Valkey\s+\d+\.\d+\.\d+", re.MULTILINE)
 _VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
-_RC_STAGE_RE = re.compile(r"^rc(\d+)$")
+# rcN, N starting at 1 with no leading zeros: "rc1", "rc12" but not "rc0"/"rc01".
+_RC_STAGE_RE = re.compile(r"^rc([1-9]\d*)$")
 
 _ORDINALS = [
     "zeroth", "first", "second", "third", "fourth", "fifth", "sixth",
@@ -162,16 +180,32 @@ def unrecognized_categories(notes: "Dict[str, List[str]]") -> List[str]:
 
     A contributor may typo a header (``### Bug Fix`` for ``### Bug Fixes``) or
     invent one (``### Networking``). Such bullets are still rendered verbatim at
-    promotion time (nothing is dropped), but they fall outside :data:`CATEGORIES`
-    and :data:`SECURITY_CATEGORY`, so callers warn on them and ask a maintainer to
-    recategorize. Categories with no bullets are ignored. Order follows *notes*.
+    promotion time (nothing is dropped), but they fall outside :data:`CATEGORIES`,
+    so callers warn on them and ask a maintainer to recategorize. Reserved
+    sections (:data:`RESERVED_SECTIONS`) are deliberately excluded -- they are not
+    "miscategorized notes" to be promoted verbatim but auto-generated sections
+    that should be removed from the block; :func:`reserved_sections_present`
+    reports them separately. Categories with no bullets are ignored. Order
+    follows *notes*.
     """
-    known = set(CATEGORIES) | {SECURITY_CATEGORY}
+    known = set(CATEGORIES) | set(RESERVED_SECTIONS)
     return [
         category
         for category, bullets in notes.items()
         if bullets and category not in known
     ]
+
+
+def reserved_sections_present(notes: "Dict[str, List[str]]") -> List[str]:
+    """Return the names of :data:`RESERVED_SECTIONS` that carry bullets in *notes*.
+
+    ``Security Fixes`` and ``Contributors`` are populated automatically at release
+    time, so a contributor should never hand-add them to ``## Unreleased``. When
+    one does, the bullets are ignored at render time (not promoted), so this lets
+    callers warn that the stray section will be dropped and should be removed.
+    Order follows :data:`RESERVED_SECTIONS`.
+    """
+    return [name for name in RESERVED_SECTIONS if notes.get(name)]
 
 
 def _format_date(date: str) -> str:
@@ -240,12 +274,17 @@ def render_version_section(
 
     *notes* maps category name to a list of bullet strings (already including
     the leading ``* ``). Only non-empty categories are emitted, in
-    :data:`CATEGORIES` order, with any ``Security Fixes`` rendered first. Any
-    non-canonical category (a typo'd or invented header) is rendered verbatim
-    *after* the canonical ones so its bullets are never dropped; callers warn on
-    them via :func:`unrecognized_categories`. *contributors* is a list of display
-    strings (``"Jane Doe @jdoe"``) rendered under a trailing ``### Contributors``
-    section. *security_fixes* is an optional list of CVE bullet strings.
+    :data:`CATEGORIES` order, with ``Security Fixes`` (from *security_fixes*)
+    rendered first. Any non-canonical category (a typo'd or invented header) is
+    rendered verbatim *after* the canonical ones so its bullets are never dropped;
+    callers warn on them via :func:`unrecognized_categories`. The reserved
+    sections (:data:`RESERVED_SECTIONS`) are never read from *notes* -- a
+    ``Security Fixes`` or ``Contributors`` section a contributor hand-added to the
+    block is ignored here, since *security_fixes* and *contributors* are the
+    source of truth, and rendering both would duplicate the header.
+    *contributors* is a list of display strings (``"Jane Doe @jdoe"``) rendered
+    under a trailing ``### Contributors`` section. *security_fixes* is an optional
+    list of CVE bullet strings.
     """
     stage = _normalize_stage(stage)
     urgency = urgency.strip().upper()
@@ -267,11 +306,11 @@ def render_version_section(
             out.append(bullet)
         out.append("")
 
+    # Security Fixes come only from *security_fixes* (the embargo CVE list), never
+    # from *notes*: a hand-added "### Security Fixes" in the block is ignored so it
+    # cannot duplicate this header (reserved_sections_present warns about it).
     if security_fixes:
         emit_category(SECURITY_CATEGORY, list(security_fixes))
-    # Render Security Fixes that may have been carried in *notes* too.
-    if notes.get(SECURITY_CATEGORY):
-        emit_category(SECURITY_CATEGORY, notes[SECURITY_CATEGORY])
     for category in CATEGORIES:
         bullets = notes.get(category)
         if bullets:

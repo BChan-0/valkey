@@ -25,13 +25,19 @@ from typing import List, Optional
 try:  # Allow both `python -m` and direct-script execution.
     from bump_version import set_version, version_num
     from gen_contributors import list_contributors
-    from release_notes import parse_unreleased, promote, unrecognized_categories
+    from release_notes import (
+        parse_unreleased,
+        promote,
+        reserved_sections_present,
+        unrecognized_categories,
+    )
 except ImportError:  # pragma: no cover - import shim
     from utils.releasetools.bump_version import set_version, version_num  # type: ignore
     from utils.releasetools.gen_contributors import list_contributors  # type: ignore
     from utils.releasetools.release_notes import (  # type: ignore
         parse_unreleased,
         promote,
+        reserved_sections_present,
         unrecognized_categories,
     )
 
@@ -61,37 +67,69 @@ def _write(path: str, text: str) -> None:
 
 
 def _warn_unrecognized(notes_text: str, notes_file: str) -> None:
-    """Warn (non-blocking) about Unreleased bullets under non-canonical categories.
+    """Warn (non-blocking) about problematic sections in the ``## Unreleased`` block.
 
-    Authors sometimes typo a category header (``### Bug Fix`` for ``### Bug
-    Fixes``) or invent one (``### Networking``). Those bullets are still promoted
-    verbatim by :func:`release_notes.promote` so nothing is lost, but a maintainer
-    should recategorize them while reviewing the release PR. We surface them three
-    ways -- stderr (workflow logs / local runs), a GitHub Actions ``::warning::``
-    annotation, and the job summary -- mirroring check_release_notes._emit_summary.
+    Two distinct cases, both surfaced three ways: stderr (workflow logs / local
+    runs), GitHub Actions ``::warning::`` annotations, and the job summary,
+    mirroring check_release_notes._emit_summary:
+
+    * Non-canonical categories: authors sometimes typo a header (``### Bug Fix``
+      for ``### Bug Fixes``) or invent one (``### Networking``). Those bullets are
+      still promoted *verbatim* by :func:`release_notes.promote` so nothing is
+      lost, but a maintainer should recategorize them.
+    * Reserved sections (``Security Fixes`` / ``Contributors``): these are
+      generated at release time, so a hand-added one in the block is *dropped* by
+      promotion. Warn loudly so the maintainer knows the stray bullets did not
+      ship and removes the section.
     """
     notes = parse_unreleased(notes_text)
     unknown = unrecognized_categories(notes)
-    if not unknown:
+    reserved = reserved_sections_present(notes)
+    if not unknown and not reserved:
         return
 
-    summary_lines = [
-        "⚠️ {} release note(s) sit under a category that is not one of the standard "
-        "headers in {}. They were promoted verbatim under that header -- please move "
-        "them to a standard `### Category` while reviewing this PR:".format(
-            sum(len(notes[c]) for c in unknown), notes_file
-        ),
-        "",
-    ]
-    for category in unknown:
-        summary_lines.append("- **{}**".format(category))
-        for bullet in notes[category]:
-            summary_lines.append("  {}".format(bullet.strip()))
-        # One concise annotation per offending category for the Actions UI.
-        print(
-            "::warning::Unrecognized release-note category {!r} in {} "
-            "(promoted verbatim; please recategorize).".format(category, notes_file)
-        )
+    summary_lines: List[str] = []
+    if unknown:
+        summary_lines += [
+            "⚠️ {} release note(s) sit under a category that is not one of the standard "
+            "headers in {}. They were promoted verbatim under that header -- please move "
+            "them to a standard `### Category` while reviewing this PR:".format(
+                sum(len(notes[c]) for c in unknown), notes_file
+            ),
+            "",
+        ]
+        for category in unknown:
+            summary_lines.append("- **{}**".format(category))
+            for bullet in notes[category]:
+                summary_lines.append("  {}".format(bullet.strip()))
+            # One concise annotation per offending category for the Actions UI.
+            print(
+                "::warning::Unrecognized release-note category {!r} in {} "
+                "(promoted verbatim; please recategorize).".format(category, notes_file)
+            )
+
+    if reserved:
+        if summary_lines:
+            summary_lines.append("")
+        summary_lines += [
+            "⚠️ {} bullet(s) sit under a section that is generated automatically at "
+            "release time ({}) in {}. These were **not** promoted -- they are dropped "
+            "by the release cut. Move the content into the right place (CVEs via the "
+            "embargo list, contributors are auto-collected) and remove the section:".format(
+                sum(len(notes[c]) for c in reserved),
+                ", ".join("`{}`".format(c) for c in reserved),
+                notes_file,
+            ),
+            "",
+        ]
+        for category in reserved:
+            summary_lines.append("- **{}**".format(category))
+            for bullet in notes[category]:
+                summary_lines.append("  {}".format(bullet.strip()))
+            print(
+                "::warning::Reserved release-note section {!r} in {} was hand-added "
+                "and dropped (it is generated at release time).".format(category, notes_file)
+            )
 
     for line in summary_lines:
         print(line, file=sys.stderr)

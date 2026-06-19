@@ -101,6 +101,72 @@ def test_render_version_section_security_first():
     assert "* (CVE-2026-1) bad thing" in section
 
 
+def test_render_security_fixes_arg_wins_over_notes_no_duplicate_header():
+    # A contributor hand-added a Security Fixes section AND the release cut supplies
+    # the embargo CVE list. Only the supplied list renders, under a single header --
+    # the hand-added one is ignored, never duplicated.
+    notes = {
+        rn.SECURITY_CATEGORY: ["* (CVE-2026-2) hand-added in the block (#5)"],
+        "Bug Fixes": ["* a fix (#1)"],
+    }
+    section = rn.render_version_section(
+        "9.1.0", "ga", "SECURITY", "2026-06-11", notes,
+        security_fixes=["(CVE-2026-1) from the embargo list"],
+    )
+    assert section.count("### Security Fixes") == 1
+    assert "(CVE-2026-1) from the embargo list" in section
+    assert "(CVE-2026-2) hand-added in the block" not in section
+
+
+def test_render_contributors_arg_wins_over_notes_no_duplicate_header():
+    # Same for a hand-added Contributors section: the generated list is the source
+    # of truth, the hand-added section is dropped, and there is one header.
+    notes = {
+        "Bug Fixes": ["* a fix (#1)"],
+        rn.CONTRIBUTORS_SECTION: ["* I Added Myself @sneaky"],
+    }
+    section = rn.render_version_section(
+        "9.1.0", "ga", "LOW", "2026-06-11", notes,
+        contributors=["Real Generated @gen"],
+    )
+    assert section.count("### Contributors") == 1
+    assert "Real Generated @gen" in section
+    assert "I Added Myself @sneaky" not in section
+
+
+def test_reserved_sections_present_reports_bullet_bearing_only():
+    notes = {
+        "Bug Fixes": ["* x (#1)"],
+        rn.SECURITY_CATEGORY: ["* (CVE-2026-1) y"],
+        rn.CONTRIBUTORS_SECTION: [],  # present but empty -> not reported
+    }
+    assert rn.reserved_sections_present(notes) == [rn.SECURITY_CATEGORY]
+
+
+def test_unrecognized_categories_excludes_reserved_sections():
+    # Reserved sections with bullets are handled by reserved_sections_present, not
+    # flagged as "miscategorized" (which would promote them verbatim).
+    notes = {
+        rn.SECURITY_CATEGORY: ["* (CVE-2026-1) y"],
+        rn.CONTRIBUTORS_SECTION: ["* Me @me"],
+        "Networking": ["* invented (#2)"],
+    }
+    assert rn.unrecognized_categories(notes) == ["Networking"]
+
+
+def test_normalize_stage_rejects_rc_zero_and_leading_zeros():
+    import pytest
+
+    for good, num in [("rc1", 1), ("rc2", 2), ("rc12", 12)]:
+        assert rn._normalize_stage(good) == good
+        assert "{} release candidate".format(rn.ordinal(num)) in rn._urgency_sentence(
+            "9.1.0", good, "LOW"
+        )
+    for bad in ["rc0", "rc01", "rc007", "rc", "rcx"]:
+        with pytest.raises(ValueError):
+            rn._normalize_stage(bad)
+
+
 SAMPLE_UNRECOGNIZED = """preamble
 
 ## Unreleased
