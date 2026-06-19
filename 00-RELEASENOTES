@@ -24,7 +24,7 @@ PR and append a bullet under the matching category below, in the form:
 
     * <human-readable description> by @<your-github-handle>
 
-The bullet does need a PR number to pass the check. Once your PR is open, feel
+The bullet needs a PR number to pass the check. Once your PR is open, feel
 free to edit the bullet to add it:
 
     * <human-readable description> by @<your-github-handle> '(#1234)'
