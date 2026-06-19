@@ -45,7 +45,9 @@ on:
         description: "Branch whose ## Unreleased block to reset in a companion PR (empty to skip)"
         required: false
         type: string
-        default: "unstable"
+        # FORK TEST: target the feature branch instead of unstable. Restore
+        # "unstable" before moving to valkey-io/valkey.
+        default: "feature/release-notes-automation"
 
 permissions:
   contents: read
@@ -201,25 +203,35 @@ jobs:
           git config user.name "valkey-ci-bot"
           git config user.email "valkey-ci-bot@users.noreply.github.com"
 
-          # Start from the tip of the unstable branch, not the release branch.
+          # Materialize the unstable branch in a separate worktree, leaving the
+          # current checkout (the dispatch ref, which carries the release tooling)
+          # as our working directory. Switching the main tree to unstable would
+          # remove utils/releasetools/ on any unstable that predates this feature,
+          # so we instead run the tooling from here and edit the worktree's file
+          # via --repo-dir (reset-only mode does no git ops, only reads/writes the
+          # notes file under that dir).
           git fetch origin "${UNSTABLE}"
-          git checkout -b "${RESET_BRANCH}" "origin/${UNSTABLE}"
+          WT="$(mktemp -d)/unstable"
+          git worktree add -b "${RESET_BRANCH}" "${WT}" "origin/${UNSTABLE}"
 
           python3 utils/releasetools/prepare_release.py \
             --version "${VERSION}" \
             --stage "${STAGE}" \
             --urgency "${{ inputs.urgency }}" \
             --repo "${{ github.repository }}" \
+            --repo-dir "${WT}" \
             --reset-unreleased-only
 
-          git add 00-RELEASENOTES
-          if git diff --cached --quiet; then
+          git -C "${WT}" add 00-RELEASENOTES
+          if git -C "${WT}" diff --cached --quiet; then
             echo "## Unreleased on ${UNSTABLE} already empty; no companion PR." >> "$GITHUB_STEP_SUMMARY"
+            git worktree remove --force "${WT}"
             exit 0
           fi
 
-          git commit -s -m "${TITLE}"
-          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+          git -C "${WT}" commit -s -m "${TITLE}"
+          git -C "${WT}" push --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             "HEAD:${RESET_BRANCH}"
 
           BODY=$(cat <<EOF
