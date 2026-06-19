@@ -119,3 +119,57 @@ def test_clean_notes_emit_no_warning(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "::warning::" not in captured.out
     assert "Release notes warnings" not in captured.err
+
+
+NOTES_RESERVED = """preamble
+
+## Unreleased
+
+### Bug Fixes
+* Fixed a real crash by @alice (#10)
+
+### Contributors
+* I Added Myself @sneaky
+
+### Security Fixes
+* (CVE-2026-9) hand-added by someone (#11)
+"""
+
+
+def test_reserved_section_dropped_and_warned(tmp_path, monkeypatch, capsys):
+    # Hand-added Security Fixes / Contributors sections are generated at release
+    # time, so promotion drops them. The dry-run output must not contain the stray
+    # bullets, and a warning must name both reserved sections.
+    _setup(tmp_path, NOTES_RESERVED)
+    monkeypatch.setattr(pr, "list_contributors", lambda *a, **k: ["Real Gen @gen"])
+    rc = _run(tmp_path)
+    captured = capsys.readouterr()
+    assert rc == 0
+    # The dry run prints the promoted file (a dated section) then the reset
+    # ## Unreleased block (whose guidance comment now names the reserved
+    # sections). Scope header counts to the promoted section only.
+    promoted = captured.out.split("## Unreleased", 1)[0]
+    # Stray bullets dropped, generated contributor used instead.
+    assert "I Added Myself @sneaky" not in promoted
+    assert "(CVE-2026-9) hand-added by someone" not in promoted
+    assert "Real Gen @gen" in promoted
+    # Exactly one Contributors header in the promoted section (no duplicate).
+    assert promoted.count("### Contributors") == 1
+    # The hand-added Security Fixes section was dropped, not promoted.
+    assert "### Security Fixes" not in promoted
+    # Warning names both reserved sections (annotation on stdout, detail on stderr).
+    assert "::warning::Reserved release-note section" in captured.out
+    assert "Contributors" in captured.err and "Security Fixes" in captured.err
+
+
+def test_reserved_section_warning_in_job_summary(tmp_path, monkeypatch):
+    _setup(tmp_path, NOTES_RESERVED)
+    monkeypatch.setattr(pr, "list_contributors", lambda *a, **k: [])
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    rc = _run(tmp_path)
+    assert rc == 0
+    text = summary.read_text()
+    assert "Release notes warnings" in text
+    assert "not** promoted" in text or "not promoted" in text.replace("**", "")
+    assert "(CVE-2026-9) hand-added by someone" in text

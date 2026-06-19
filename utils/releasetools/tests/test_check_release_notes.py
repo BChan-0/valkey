@@ -398,6 +398,89 @@ def test_author_warning_only_targets_net_new(tmp_path, monkeypatch):
     assert not any("other than this PR's author" in m for m in messages)
 
 
+NOTES_RESERVED_CONTRIBUTORS = """preamble
+
+## Unreleased
+
+### Bug Fixes
+* Fixed a thing by @dev (#1)
+
+### Contributors
+* I Added Myself @dev
+"""
+
+NOTES_RESERVED_SECURITY_ONLY = """preamble
+
+## Unreleased
+
+### Security Fixes
+* (CVE-2026-9) I found this myself by @dev (#1)
+"""
+
+
+def test_reserved_contributors_section_warns_but_passes(tmp_path):
+    # A release-notes PR adds a valid bullet AND a hand-written Contributors
+    # section. The note rule passes; a non-blocking warning flags the stray
+    # section, and the Contributors bullet is NOT held to the ref/author rules.
+    _write(tmp_path, NOTES_RESERVED_CONTRIBUTORS)
+    ok, messages = crn.evaluate(
+        ["release-notes"], base_sha=None, repo_dir=str(tmp_path), pr_number="1", pr_author="dev"
+    )
+    assert ok
+    joined = "\n".join(messages)
+    assert "generated automatically" in joined
+    assert "### Contributors" in joined
+    # The reserved-section bullet must not trigger a missing-ref/author failure.
+    assert not any(m.startswith("❌") for m in messages)
+
+
+def test_reserved_section_bullet_not_counted_as_release_note(tmp_path):
+    # A release-notes PR whose ONLY addition is a reserved section adds no real
+    # release-note bullet, so rule 2 fails (and the warning is not reached because
+    # an earlier hard failure returns first).
+    notes = NOTES_RESERVED_SECURITY_ONLY  # only a Security Fixes section, no real note
+    _write(tmp_path, notes)
+    ok, messages = crn.evaluate(
+        ["release-notes"], base_sha=None, repo_dir=str(tmp_path), pr_number="1", pr_author="dev"
+    )
+    assert not ok
+    assert any("adds no new entry" in m for m in messages)
+
+
+def test_no_release_notes_reserved_section_only_warns_and_passes(tmp_path, monkeypatch):
+    # Reserved-section bullets are not release notes, so a no-release-notes PR
+    # adding only a Security Fixes section passes the count check; it still warns.
+    # A base_sha is supplied (as CI always does) so the file is actually read --
+    # the no-base early-return path skips the file and cannot warn.
+    _write(tmp_path, NOTES_RESERVED_SECURITY_ONLY)
+    monkeypatch.setattr(crn, "_git_show", lambda ref, repo_dir: NOTES_EMPTY)
+    ok, messages = crn.evaluate(
+        ["no-release-notes"], base_sha="abc123", repo_dir=str(tmp_path)
+    )
+    assert ok
+    joined = "\n".join(messages)
+    assert "no release note required" in joined
+    assert "generated automatically" in joined
+    assert "### Security Fixes" in joined
+
+
+def test_reserved_section_warning_only_for_net_new(tmp_path, monkeypatch):
+    # The base already carried the Contributors section; this PR only adds a real
+    # bullet. The stray section is pre-existing, so no warning fires for this PR.
+    base = NOTES_RESERVED_CONTRIBUTORS
+    head = NOTES_RESERVED_CONTRIBUTORS.replace(
+        "* Fixed a thing by @dev (#1)\n",
+        "* Fixed a thing by @dev (#1)\n* Added a flag by @dev (#2)\n",
+    )
+    _write(tmp_path, head)
+    monkeypatch.setattr(crn, "_git_show", lambda ref, repo_dir: base)
+    ok, messages = crn.evaluate(
+        ["release-notes"], base_sha="abc123", repo_dir=str(tmp_path), pr_number="2", pr_author="dev"
+    )
+    assert ok
+    assert not any("generated automatically" in m for m in messages)
+
+
 def test_main_exit_codes(tmp_path, monkeypatch):
     _write(tmp_path, NOTES_WITH_BULLET)
     monkeypatch.chdir(tmp_path)

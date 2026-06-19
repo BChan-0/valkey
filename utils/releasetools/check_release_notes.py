@@ -51,9 +51,17 @@ from collections import Counter
 from typing import Dict, List, Optional, Tuple
 
 try:  # Allow both `python -m` and direct-script execution.
-    from release_notes import count_bullets, parse_unreleased
+    from release_notes import (
+        RESERVED_SECTIONS,
+        parse_unreleased,
+        reserved_sections_present,
+    )
 except ImportError:  # pragma: no cover - import shim
-    from utils.releasetools.release_notes import count_bullets, parse_unreleased  # type: ignore
+    from utils.releasetools.release_notes import (  # type: ignore
+        RESERVED_SECTIONS,
+        parse_unreleased,
+        reserved_sections_present,
+    )
 
 RELEASE_LABEL = "release-notes"
 NO_RELEASE_LABEL = "no-release-notes"
@@ -104,24 +112,40 @@ def _git_show(ref_path: str, repo_dir: str) -> Optional[str]:
 
 
 def _all_bullets(notes: "Dict[str, List[str]]") -> List[str]:
-    """Flatten a parsed Unreleased map into a single list of bullet strings."""
+    """Flatten the *release-note* bullets of a parsed Unreleased map.
+
+    Bullets under a reserved section (:data:`RESERVED_SECTIONS`) are excluded:
+    ``Security Fixes`` and ``Contributors`` are generated at release time, so a
+    contributor's hand-added entry there is not a release note and must not be
+    counted toward the net-new rule or held to the PR-number/attribution rules
+    (it would otherwise fail with a confusing message instead of the friendly
+    "remove this section" warning). :func:`_check_reserved_sections` handles them.
+    """
     bullets: List[str] = []
-    for category_bullets in notes.values():
+    for category, category_bullets in notes.items():
+        if category in RESERVED_SECTIONS:
+            continue
         bullets.extend(category_bullets)
     return bullets
 
 
-def _new_bullets(head_text: str, base_text: Optional[str]) -> List[str]:
-    """Return bullets present in *head_text* but not in *base_text*.
+def _new_bullets(
+    head_notes: "Dict[str, List[str]]",
+    base_notes: "Dict[str, List[str]]",
+    base_known: bool,
+) -> List[str]:
+    """Return release-note bullets present in *head_notes* but not in *base_notes*.
 
     Compared as a multiset so an added duplicate still counts as new, while
-    bullets carried over from the base are not re-suggested. When there is no
-    base text (new file or unknown base) every head bullet is considered new.
+    bullets carried over from the base are not re-suggested. When the base is
+    unknown (*base_known* is False -- new file or unfetched base) every head
+    bullet is considered new. Reserved-section bullets are excluded throughout
+    (see :func:`_all_bullets`).
     """
-    head = _all_bullets(parse_unreleased(head_text))
-    if base_text is None:
+    head = _all_bullets(head_notes)
+    if not base_known:
         return head
-    base_counts = Counter(_all_bullets(parse_unreleased(base_text)))
+    base_counts = Counter(_all_bullets(base_notes))
     new: List[str] = []
     for bullet in head:
         if base_counts.get(bullet, 0) > 0:
@@ -240,6 +264,36 @@ def _check_authors(new_bullets: List[str], pr_author: Optional[str]) -> List[str
     return lines
 
 
+def _check_reserved_sections(
+    head_notes: "Dict[str, List[str]]", base_notes: "Dict[str, List[str]]"
+) -> List[str]:
+    """Return warning lines for reserved sections *this PR* added to ``## Unreleased``.
+
+    ``Security Fixes`` and ``Contributors`` are filled in automatically at release
+    time -- CVEs from the embargo list, contributors from the merged-PR authors --
+    so a contributor should not add them by hand. A stray one is ignored at
+    promotion (its bullets are dropped, never shipped), so this is a *warning*, not
+    a failure: it tells the author to remove the section before it silently
+    disappears. Only reserved sections not already bullet-bearing in *base_notes*
+    are flagged, so a PR is not warned about a stray section it did not introduce.
+    Returns ``[]`` when this PR added no reserved section.
+    """
+    already = set(reserved_sections_present(base_notes))
+    present = [name for name in reserved_sections_present(head_notes) if name not in already]
+    if not present:
+        return []
+    names = ", ".join("`### {}`".format(name) for name in present)
+    return [
+        "",
+        "⚠️ The {} section(s) are generated automatically when a release is cut "
+        "(security fixes from the embargo CVE list, contributors from the merged "
+        "PRs), so any bullets you add under them in `## Unreleased` are ignored at "
+        "release time and dropped. Please remove these section(s) from your "
+        "change:".format(names),
+        "",
+    ] + ["    ### {}".format(name) for name in present]
+
+
 def evaluate(
     labels: List[str],
     *,
@@ -293,14 +347,22 @@ def evaluate(
         messages.append("❌ Could not read {}: {}".format(notes_file, exc))
         return False, messages
 
-    head_count = count_bullets(parse_unreleased(head_text))
+    head_notes = parse_unreleased(head_text)
+    # Counts and diffs use the release-note bullets only; reserved-section bullets
+    # (Security Fixes / Contributors) are auto-generated at release time, so they
+    # are never release notes for the purposes of these rules (see _all_bullets).
+    head_count = len(_all_bullets(head_notes))
 
     base_text: Optional[str] = None
+    base_notes: "Dict[str, List[str]]" = {}
+    base_known = False
     base_count = 0
     if base_sha:
         base_text = _git_show("{}:{}".format(base_sha, notes_file), repo_dir)
         if base_text is not None:
-            base_count = count_bullets(parse_unreleased(base_text))
+            base_notes = parse_unreleased(base_text)
+            base_known = True
+            base_count = len(_all_bullets(base_notes))
 
     if has_no_release:
         # The label says there is nothing to note, but prepare-release.yml would
@@ -317,6 +379,9 @@ def evaluate(
         messages.append(
             "✅ PR is labelled `{}`; no release note required.".format(NO_RELEASE_LABEL)
         )
+        # A stray reserved section adds no release-note bullet (so the count check
+        # above passes), but it would be silently dropped at release time -- warn.
+        messages.extend(_check_reserved_sections(head_notes, base_notes))
         return True, messages
 
     # Rule 2: release-notes label requires a new Unreleased bullet.
@@ -331,7 +396,7 @@ def evaluate(
         )
         return False, messages
 
-    new_bullets = _new_bullets(head_text, base_text)
+    new_bullets = _new_bullets(head_notes, base_notes, base_known)
 
     # Every net-new bullet must carry this PR's number and a contributor
     # attribution; a missing or wrong PR number, or a missing handle, fails the
@@ -349,6 +414,9 @@ def evaluate(
     # Crediting a different handle than the PR author is allowed; surface it as
     # a non-blocking warning only.
     messages.extend(_check_authors(new_bullets, pr_author))
+    # Reserved sections (Security Fixes / Contributors) are auto-generated at
+    # release time; warn (non-blocking) if this PR hand-added one.
+    messages.extend(_check_reserved_sections(head_notes, base_notes))
     return True, messages
 
 

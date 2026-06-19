@@ -34,6 +34,11 @@ check requires exactly one of these two labels, and a note here when `release-no
 is set. This block is promoted into a dated release section when a release is cut,
 so keep entries user-readable. Any additional categories will also be promoted, with
 a warning for visibility.
+
+Do not add `### Security Fixes` or `### Contributors` sections here: they are
+generated automatically when a release is cut (security fixes from the embargo CVE
+list, contributors from the merged PRs), so anything you add under them is dropped.
+The CI check warns if you do.
 -->
 
 ### Behavior Changes
