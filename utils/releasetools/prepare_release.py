@@ -25,11 +25,15 @@ from typing import List, Optional
 try:  # Allow both `python -m` and direct-script execution.
     from bump_version import set_version, version_num
     from gen_contributors import list_contributors
-    from release_notes import promote
+    from release_notes import parse_unreleased, promote, unrecognized_categories
 except ImportError:  # pragma: no cover - import shim
     from utils.releasetools.bump_version import set_version, version_num  # type: ignore
     from utils.releasetools.gen_contributors import list_contributors  # type: ignore
-    from utils.releasetools.release_notes import promote  # type: ignore
+    from utils.releasetools.release_notes import (  # type: ignore
+        parse_unreleased,
+        promote,
+        unrecognized_categories,
+    )
 
 
 def _last_tag(repo_dir: str) -> Optional[str]:
@@ -54,6 +58,51 @@ def _read(path: str) -> str:
 def _write(path: str, text: str) -> None:
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(text)
+
+
+def _warn_unrecognized(notes_text: str, notes_file: str) -> None:
+    """Warn (non-blocking) about Unreleased bullets under non-canonical categories.
+
+    Authors sometimes typo a category header (``### Bug Fix`` for ``### Bug
+    Fixes``) or invent one (``### Networking``). Those bullets are still promoted
+    verbatim by :func:`release_notes.promote` so nothing is lost, but a maintainer
+    should recategorize them while reviewing the release PR. We surface them three
+    ways -- stderr (workflow logs / local runs), a GitHub Actions ``::warning::``
+    annotation, and the job summary -- mirroring check_release_notes._emit_summary.
+    """
+    notes = parse_unreleased(notes_text)
+    unknown = unrecognized_categories(notes)
+    if not unknown:
+        return
+
+    summary_lines = [
+        "⚠️ {} release note(s) sit under a category that is not one of the standard "
+        "headers in {}. They were promoted verbatim under that header -- please move "
+        "them to a standard `### Category` while reviewing this PR:".format(
+            sum(len(notes[c]) for c in unknown), notes_file
+        ),
+        "",
+    ]
+    for category in unknown:
+        summary_lines.append("- **{}**".format(category))
+        for bullet in notes[category]:
+            summary_lines.append("  {}".format(bullet.strip()))
+        # One concise annotation per offending category for the Actions UI.
+        print(
+            "::warning::Unrecognized release-note category {!r} in {} "
+            "(promoted verbatim; please recategorize).".format(category, notes_file)
+        )
+
+    for line in summary_lines:
+        print(line, file=sys.stderr)
+
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        try:
+            with open(summary_path, "a", encoding="utf-8") as fh:
+                fh.write("\n".join(["## Release notes warnings", ""] + summary_lines) + "\n")
+        except OSError:
+            pass
 
 
 def run(
@@ -84,6 +133,9 @@ def run(
         print("No base ref or tag found; skipping contributor generation.", file=sys.stderr)
 
     notes_text = _read(os.path.join(repo_dir, notes_file))
+    # Non-blocking: flag any notes under typo'd/invented categories. They are
+    # still promoted verbatim below, so the release is never blocked on them.
+    _warn_unrecognized(notes_text, notes_file)
     new_notes = promote(
         notes_text,
         version=version,

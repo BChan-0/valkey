@@ -28,9 +28,12 @@ context directly:
     PR_NUMBER         this PR's number; each net-new bullet must end with the
                       matching "(#N)" (rule 3). When unset the PR-number check
                       is skipped, so CI always supplies it.
-    PR_AUTHOR         this PR's author login; each net-new bullet must carry a
-                      "by @handle" attribution (rule 3). When unset the author
-                      check is skipped, so CI always supplies it.
+    PR_AUTHOR         this PR's author login. Every net-new bullet must carry a
+                      "by @handle" attribution regardless (rule 3); PR_AUTHOR is
+                      used only to suggest the handle in the fix and to warn when
+                      a bullet credits someone else. When unset, the suggested
+                      fix uses a placeholder handle and the mismatch warning is
+                      skipped -- the presence requirement itself still applies.
     RELEASE_NOTES_FILE  path to the notes file (default: 00-RELEASENOTES)
     GITHUB_STEP_SUMMARY path the job-summary markdown is appended to (optional)
 
@@ -173,23 +176,25 @@ def _require_pr_refs(new_bullets: List[str], pr_number: Optional[str]) -> List[s
 def _require_authors(new_bullets: List[str], pr_author: Optional[str]) -> List[str]:
     """Return failure lines for net-new bullets lacking a ``by @handle`` attribution.
 
-    Every net-new bullet must credit a contributor. A bullet that credits a
-    handle *other* than *pr_author* is allowed (see :func:`_check_authors` for
-    the non-blocking warning); only a *missing* attribution fails here. The
-    suggested fix keeps the canonical ``* ... by @handle (#N)`` order. Gated on
-    *pr_author* being known -- it always is in CI; returns ``[]`` otherwise.
+    Every net-new bullet must credit a contributor, otherwise prepare-release.py
+    promotes it into a dated section with no per-bullet attribution. This
+    *presence* requirement is unconditional -- it does not depend on knowing the
+    PR author. A bullet that credits a handle *other* than *pr_author* is allowed
+    (see :func:`_check_authors` for the non-blocking warning); only a *missing*
+    attribution fails here. *pr_author* is used solely to fill the suggested fix;
+    when it is unknown a placeholder handle is used instead. The suggested fix
+    keeps the canonical ``* ... by @handle (#N)`` order.
     """
-    if not pr_author:
-        return []
     needing = [b for b in new_bullets if not _AUTHOR_RE.search(b)]
     if not needing:
         return []
+    handle = pr_author or "<your-github-handle>"
     lines = [
         "❌ {} new bullet(s) are missing a contributor attribution. Add "
-        "`by @{}` to each bullet:".format(len(needing), pr_author),
+        "`by @{}` to each bullet:".format(len(needing), handle),
         "",
     ]
-    attribution = "by @{}".format(pr_author)
+    attribution = "by @{}".format(handle)
     for bullet in needing:
         text = bullet.rstrip()
         # Keep the canonical "* description by @handle (#N)" order: when a

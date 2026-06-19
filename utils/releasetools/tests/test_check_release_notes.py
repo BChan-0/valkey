@@ -195,7 +195,7 @@ def test_missing_ref_only_targets_net_new_bullet(tmp_path, monkeypatch):
 
 
 def test_missing_author_fails(tmp_path):
-    # Net-new bullet has a (#1) but no "by @handle" -> now a hard failure.
+    # Net-new bullet has a (#1) but no "by @handle" -> hard failure.
     _write(tmp_path, NOTES_BULLET_NO_AUTHOR)
     ok, messages = crn.evaluate(
         ["release-notes"], base_sha=None, repo_dir=str(tmp_path), pr_author="dev"
@@ -229,14 +229,18 @@ def test_author_present_does_not_fail_missing_check(tmp_path):
     assert not any("missing a contributor attribution" in m for m in messages)
 
 
-def test_author_not_required_without_pr_author(tmp_path):
-    # Without a known PR author the attribution check is skipped.
+def test_author_presence_required_without_pr_author(tmp_path):
+    # The presence requirement is unconditional: even without a known PR author
+    # a bullet that credits nobody fails, since promotion would otherwise ship
+    # it unattributed. The suggested fix uses a placeholder handle.
     _write(tmp_path, NOTES_BULLET_NO_AUTHOR)
     ok, messages = crn.evaluate(
         ["release-notes"], base_sha=None, repo_dir=str(tmp_path), pr_author=None
     )
-    assert ok
-    assert not any("missing a contributor attribution" in m for m in messages)
+    assert not ok
+    joined = "\n".join(messages)
+    assert "missing a contributor attribution" in joined
+    assert "* Fixed a thing by @<your-github-handle> (#1)" in joined
 
 
 def test_missing_author_only_targets_net_new_bullet(tmp_path, monkeypatch):

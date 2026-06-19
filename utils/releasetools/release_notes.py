@@ -157,6 +157,23 @@ def count_bullets(notes: "Dict[str, List[str]]") -> int:
     return sum(len(bullets) for bullets in notes.values())
 
 
+def unrecognized_categories(notes: "Dict[str, List[str]]") -> List[str]:
+    """Return the names of bullet-bearing categories that are not canonical.
+
+    A contributor may typo a header (``### Bug Fix`` for ``### Bug Fixes``) or
+    invent one (``### Networking``). Such bullets are still rendered verbatim at
+    promotion time (nothing is dropped), but they fall outside :data:`CATEGORIES`
+    and :data:`SECURITY_CATEGORY`, so callers warn on them and ask a maintainer to
+    recategorize. Categories with no bullets are ignored. Order follows *notes*.
+    """
+    known = set(CATEGORIES) | {SECURITY_CATEGORY}
+    return [
+        category
+        for category, bullets in notes.items()
+        if bullets and category not in known
+    ]
+
+
 def _format_date(date: str) -> str:
     """Render *date* as ``"Tue 02 June 2026"``.
 
@@ -223,10 +240,12 @@ def render_version_section(
 
     *notes* maps category name to a list of bullet strings (already including
     the leading ``* ``). Only non-empty categories are emitted, in
-    :data:`CATEGORIES` order, with any ``Security Fixes`` rendered first.
-    *contributors* is a list of display strings (``"Jane Doe @jdoe"``) rendered
-    under a trailing ``### Contributors`` section. *security_fixes* is an
-    optional list of CVE bullet strings.
+    :data:`CATEGORIES` order, with any ``Security Fixes`` rendered first. Any
+    non-canonical category (a typo'd or invented header) is rendered verbatim
+    *after* the canonical ones so its bullets are never dropped; callers warn on
+    them via :func:`unrecognized_categories`. *contributors* is a list of display
+    strings (``"Jane Doe @jdoe"``) rendered under a trailing ``### Contributors``
+    section. *security_fixes* is an optional list of CVE bullet strings.
     """
     stage = _normalize_stage(stage)
     urgency = urgency.strip().upper()
@@ -257,6 +276,11 @@ def render_version_section(
         bullets = notes.get(category)
         if bullets:
             emit_category(category, bullets)
+    # Non-canonical categories (typo'd or invented headers) are rendered last,
+    # verbatim and in their original order, so a miscategorized note is never
+    # silently dropped; unrecognized_categories() lets callers warn about them.
+    for category in unrecognized_categories(notes):
+        emit_category(category, notes[category])
 
     if contributors:
         out.append("### Contributors")

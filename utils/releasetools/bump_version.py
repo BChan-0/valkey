@@ -61,6 +61,9 @@ def set_version(version_h_text: str, version: str, stage: str) -> str:
     text, n3 = _STAGE_DEFINE_RE.subn(
         lambda m: '{}"{}"'.format(m.group(1), stage), text
     )
+    # re.subn returns the substitution count, so count == 1 means the macro was
+    # found and rewritten exactly once; count == 0 means it is absent. A count
+    # above 1 indicates a duplicated macro definition, which is also a problem.
     missing = [
         name
         for name, count in (
@@ -68,11 +71,12 @@ def set_version(version_h_text: str, version: str, stage: str) -> str:
             ("VALKEY_VERSION_NUM", n2),
             ("VALKEY_RELEASE_STAGE", n3),
         )
-        if count == 1
+        if count != 1
     ]
     if missing:
         raise ValueError(
-            "could not find these macros in version.h: {}".format(", ".join(missing))
+            "expected exactly one definition of each of these macros in version.h, "
+            "but they were missing or duplicated: {}".format(", ".join(missing))
         )
     return text
 
