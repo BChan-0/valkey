@@ -377,9 +377,13 @@ def promote(
 ) -> str:
     """Promote the ``## Unreleased`` block into a new dated release section.
 
-    Returns the full rewritten file: a regenerated title + urgency legend, the
-    new dated section first, any previously dated sections after it, and an
-    emptied ``## Unreleased`` block at the end.
+    Returns the full rewritten file as a frozen release-branch changelog: a
+    regenerated title + urgency legend, the new dated section first, then any
+    previously dated sections after it. The ``## Unreleased`` block is dropped
+    entirely -- a cut release line is frozen and does not carry a running
+    changelog (see .github/workflows/release-notes-check.yml). Use
+    :func:`reset_unreleased` instead to empty (rather than remove) the block on a
+    branch that keeps accumulating notes.
     """
     major, minor, _ = parse_version(version)
     notes = parse_unreleased(text)
@@ -390,8 +394,7 @@ def promote(
     before_unreleased = text.split("\n" + UNRELEASED_HEADER, 1)[0]
     existing = _existing_dated_sections(before_unreleased)
 
-    parts: List[str] = [render_header(major, minor), "", dated.rstrip(), ""]
+    parts: List[str] = [render_header(major, minor), "", dated.rstrip()]
     if existing:
-        parts += [existing, ""]
-    parts.append(render_empty_unreleased().rstrip())
+        parts += ["", existing]
     return "\n".join(parts).rstrip() + "\n"
