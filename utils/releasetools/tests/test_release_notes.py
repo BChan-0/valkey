@@ -213,10 +213,9 @@ def test_promote_keeps_miscategorized_notes():
     out = rn.promote(
         SAMPLE_UNRECOGNIZED, version="9.1.0", stage="rc1", urgency="LOW", date="2026-06-11",
     )
-    assert "Big networking change someone miscategorized by @bob (#11)" in out
-    # And the Unreleased block is still reset afterwards.
-    tail = out.split("## Unreleased", 1)[1]
-    assert "Big networking change" not in tail
+    # Promoted into the (frozen) dated section exactly once; no ## Unreleased block.
+    assert out.count("Big networking change someone miscategorized by @bob (#11)") == 1
+    assert "## Unreleased" not in out
 
 
 def test_render_invalid_urgency_and_stage():
@@ -244,7 +243,7 @@ def test_reset_unreleased_clears_bullets_preserves_preamble():
     assert "Changed the default of foo" not in reset
 
 
-def test_promote_builds_dated_section_and_resets_block():
+def test_promote_builds_frozen_dated_section_without_unreleased_block():
     out = rn.promote(
         SAMPLE, version="9.1.0", stage="ga", urgency="HIGH", date="2026-06-11",
         contributors=["Alice A @alice"],
@@ -255,10 +254,10 @@ def test_promote_builds_dated_section_and_resets_block():
     # Dated section with the promoted notes.
     assert "Valkey 9.1.0 GA" in out
     assert "Changed the default of foo by @alice (#100)" in out
-    # Unreleased block reset to empty at the end.
-    tail = out.split("## Unreleased", 1)[1]
-    assert "Changed the default of foo" not in tail
-    assert rn.is_unreleased_empty(rn.parse_unreleased(out))
+    # The release-branch file is frozen: no running ## Unreleased block remains,
+    # and parse_unreleased finds nothing (reset_unreleased() handles unstable).
+    assert "## Unreleased" not in out
+    assert rn.parse_unreleased(out) == {}
 
 
 def test_promote_preserves_prior_dated_sections():

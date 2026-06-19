@@ -5,7 +5,7 @@ Invoked by .github/workflows/prepare-release.yml. Given a target version,
 release stage, urgency, and date, it:
 
 1. promotes the ``## Unreleased`` block of 00-RELEASENOTES into a dated section
-   (resetting ``## Unreleased`` to empty),
+   (dropping the ``## Unreleased`` block, since a cut release line is frozen),
 2. injects a generated ``### Contributors`` list into that new section, and
 3. sets the version macros in src/version.h.
 
@@ -29,6 +29,7 @@ try:  # Allow both `python -m` and direct-script execution.
         parse_unreleased,
         promote,
         reserved_sections_present,
+        reset_unreleased,
         unrecognized_categories,
     )
 except ImportError:  # pragma: no cover - import shim
@@ -38,6 +39,7 @@ except ImportError:  # pragma: no cover - import shim
         parse_unreleased,
         promote,
         reserved_sections_present,
+        reset_unreleased,
         unrecognized_categories,
     )
 
@@ -157,7 +159,24 @@ def run(
     version_file: str,
     security_fixes: Optional[List[str]],
     dry_run: bool,
+    reset_unreleased_only: bool = False,
 ) -> int:
+    # Unstable path: don't cut a dated section or bump the version, just empty the
+    # ## Unreleased block so the bullets that were just promoted onto the release
+    # branch are cleared from unstable's running changelog and not promoted twice.
+    # (The frozen release-branch file, produced by the default path below via
+    # promote(), drops the block entirely.)
+    if reset_unreleased_only:
+        notes_text = _read(os.path.join(repo_dir, notes_file))
+        new_notes = reset_unreleased(notes_text)
+        if dry_run:
+            print("\n===== {} (reset Unreleased, dry run) =====\n".format(notes_file))
+            print(new_notes)
+            return 0
+        _write(os.path.join(repo_dir, notes_file), new_notes)
+        print("Reset the ## Unreleased block in {}.".format(notes_file))
+        return 0
+
     if not date:
         date = datetime.date.today().isoformat()
 
@@ -240,6 +259,13 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="Print results without writing files"
     )
+    parser.add_argument(
+        "--reset-unreleased-only",
+        action="store_true",
+        help="Only empty the ## Unreleased block (no dated section or version bump). "
+        "Used to prepare the companion PR that clears the just-released notes on the "
+        "unstable branch.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -256,6 +282,7 @@ def main(argv=None) -> int:
             version_file=args.version_file,
             security_fixes=args.security_fixes,
             dry_run=args.dry_run,
+            reset_unreleased_only=args.reset_unreleased_only,
         )
     except ValueError as exc:
         print("error: {}".format(exc), file=sys.stderr)

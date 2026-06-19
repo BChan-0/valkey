@@ -64,9 +64,11 @@ def test_dry_run_promotes_notes_and_reports_version(tmp_path, monkeypatch, capsy
     assert "Valkey 9.1.0-rc1" in out
     assert "Fixed a real crash by @alice (#10)" in out
     assert "### Contributors" in out and "* Alice A @alice" in out
+    # The promoted (frozen) file carries no running ## Unreleased block.
+    assert "## Unreleased" not in out.split("===== version.h", 1)[0]
     # Version macros computed correctly (the bump_version bug-fix path).
     assert "VALKEY_VERSION=9.1.0 VALKEY_VERSION_NUM=0x00090100 VALKEY_RELEASE_STAGE=rc1" in out
-    # Dry run must not touch the working files.
+    # Dry run must not touch the working files (source still has its block).
     assert "## Unreleased" in (tmp_path / "00-RELEASENOTES").read_text()
     assert '"255.255.255"' in (tmp_path / "version.h").read_text()
 
@@ -78,11 +80,41 @@ def test_dry_run_writes_files_when_not_dry(tmp_path, monkeypatch):
     assert rc == 0
     notes = (tmp_path / "00-RELEASENOTES").read_text()
     version = (tmp_path / "version.h").read_text()
-    # Notes promoted and Unreleased reset; version macros rewritten.
+    # Frozen release-branch file: dated section, no ## Unreleased block; version
+    # macros rewritten.
     assert "Valkey 9.1.0-rc1" in notes
+    assert "## Unreleased" not in notes
     assert '#define VALKEY_VERSION "9.1.0"' in version
     assert "#define VALKEY_VERSION_NUM 0x00090100" in version
     assert '#define VALKEY_RELEASE_STAGE "rc1"' in version
+
+
+def test_reset_unreleased_only_empties_block_no_version_bump(tmp_path, monkeypatch):
+    # The companion unstable PR: empty the ## Unreleased block (clearing the
+    # just-released bullets) without cutting a dated section or touching version.h.
+    _setup(tmp_path, NOTES_CLEAN)
+    monkeypatch.setattr(pr, "list_contributors", lambda *a, **k: [])
+    rc = _run(tmp_path, dry_run=False, reset_unreleased_only=True)
+    assert rc == 0
+    notes = (tmp_path / "00-RELEASENOTES").read_text()
+    version = (tmp_path / "version.h").read_text()
+    # Block kept but emptied; the released bullet is gone; no dated section cut.
+    assert "## Unreleased" in notes
+    assert "Fixed a real crash by @alice (#10)" not in notes
+    assert "Valkey 9.1.0-rc1" not in notes
+    # version.h is untouched on this path.
+    assert '#define VALKEY_VERSION "255.255.255"' in version
+
+
+def test_reset_unreleased_only_dry_run_does_not_write(tmp_path, monkeypatch, capsys):
+    _setup(tmp_path, NOTES_CLEAN)
+    monkeypatch.setattr(pr, "list_contributors", lambda *a, **k: [])
+    rc = _run(tmp_path, reset_unreleased_only=True)  # dry_run=True by default
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "reset Unreleased" in out
+    # Source untouched: the bullet is still there on disk.
+    assert "Fixed a real crash by @alice (#10)" in (tmp_path / "00-RELEASENOTES").read_text()
 
 
 def test_miscategorized_note_warns_but_still_promotes(tmp_path, monkeypatch, capsys):
