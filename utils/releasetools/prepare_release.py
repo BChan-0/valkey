@@ -26,7 +26,7 @@ from typing import List, Optional
 
 try:  # Allow both `python -m` and direct-script execution.
     from bump_version import set_version, version_num
-    from gen_contributors import list_contributors
+    from gen_contributors import _PRLookupUnavailable, list_contributors, pr_author
     from release_notes import (
         parse_unreleased,
         promote,
@@ -36,7 +36,11 @@ try:  # Allow both `python -m` and direct-script execution.
     )
 except ImportError:  # pragma: no cover - import shim
     from utils.releasetools.bump_version import set_version, version_num  # type: ignore
-    from utils.releasetools.gen_contributors import list_contributors  # type: ignore
+    from utils.releasetools.gen_contributors import (  # type: ignore
+        _PRLookupUnavailable,
+        list_contributors,
+        pr_author,
+    )
     from utils.releasetools.release_notes import (  # type: ignore
         parse_unreleased,
         promote,
@@ -150,9 +154,12 @@ def _warn_unrecognized(notes_text: str, notes_file: str) -> None:
 # A valid bullet ends with its PR number, "(#123)", and credits a contributor with
 # "by @handle". These mirror check_release_notes._TRAILING_PR_REF_RE and _AUTHOR_RE,
 # the PR-time gates: the ref is digits-only at the end of the bullet (so "(#idk)"
-# fails), and the attribution may appear anywhere in the bullet.
+# fails), and the attribution may appear anywhere in the bullet. The capturing
+# variants extract the number / handle for the per-bullet accuracy lookup.
 _TRAILING_PR_REF_RE = re.compile(r"\(#\d+\)\s*$")
+_TRAILING_PR_NUM_RE = re.compile(r"\(#(\d+)\)\s*$")
 _AUTHOR_RE = re.compile(r"by @[\w-]+")
+_AUTHOR_HANDLE_RE = re.compile(r"by @([\w-]+)")
 
 
 def _warn_bad_bullets(notes_text: str, notes_file: str) -> None:
@@ -203,6 +210,91 @@ def _warn_bad_bullets(notes_text: str, notes_file: str) -> None:
     print(
         "::warning::{} release-note bullet(s) in {} have a missing/malformed PR "
         "reference or attribution.".format(len(offenders), notes_file)
+    )
+
+    for line in summary_lines:
+        print(line, file=sys.stderr)
+
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        try:
+            with open(summary_path, "a", encoding="utf-8") as fh:
+                fh.write("\n".join(["## Release notes warnings", ""] + summary_lines) + "\n")
+        except OSError:
+            pass
+
+
+def _warn_inaccurate_attribution(
+    notes_text: str, notes_file: str, repo: str, token: Optional[str]
+) -> None:
+    """Warn (non-blocking) when a bullet's ``(#N)`` / ``@handle`` disagrees with GitHub.
+
+    For each promoted bullet that carries a well-formed trailing ``(#N)``, resolve
+    PR #N via the GitHub API and check two things:
+
+    * the PR exists -- a ``(#N)`` pointing at no PR in *repo* is a typo'd number;
+    * the bullet's ``by @handle`` matches the PR's actual author -- a mismatch is a
+      mis-credited line (the correct handle is surfaced).
+
+    This is the accuracy counterpart to :func:`_warn_bad_bullets` (which only
+    checks shape). It is best-effort and non-blocking: bullets without a valid
+    ``(#N)`` are skipped (already flagged for shape), and when a lookup cannot be
+    performed at all (no token, offline, rate-limited) the check is skipped
+    silently rather than emitting false "PR not found" noise. Reserved sections are
+    excluded (their bullets are dropped, not promoted).
+    """
+    notes = parse_unreleased(notes_text)
+    reserved = set(reserved_sections_present(notes))
+    findings: List[str] = []
+    unavailable = False
+    for category, bullets in notes.items():
+        if category in reserved:
+            continue
+        for bullet in bullets:
+            text = bullet.strip()
+            num_match = _TRAILING_PR_NUM_RE.search(text)
+            if not num_match:
+                continue  # shape problems are _warn_bad_bullets' job
+            number = int(num_match.group(1))
+            try:
+                author = pr_author(repo, number, token)
+            except _PRLookupUnavailable:
+                unavailable = True
+                break
+            if author is None:
+                findings.append("{}  -- (#{}) is not a pull request in {}".format(
+                    text, number, repo))
+                continue
+            handle_match = _AUTHOR_HANDLE_RE.search(text)
+            credited = handle_match.group(1) if handle_match else None
+            # A bullet may legitimately credit a co-author/proxy, so only flag when
+            # the credited handle is present and differs from the PR author.
+            if credited and credited.casefold() != author.casefold():
+                findings.append(
+                    "{}  -- credits @{}, but (#{}) was authored by @{}".format(
+                        text, credited, number, author))
+        if unavailable:
+            break
+
+    if unavailable:
+        print(
+            "PR attribution accuracy check skipped (GitHub lookup unavailable).",
+            file=sys.stderr,
+        )
+        return
+    if not findings:
+        return
+
+    summary_lines = [
+        "⚠️ {} promoted bullet(s) in {} have a PR reference or contributor that does "
+        "not match GitHub. They were promoted as-is -- please correct them on the "
+        "base branch:".format(len(findings), notes_file),
+        "",
+    ]
+    summary_lines += ["  {}".format(f) for f in findings]
+    print(
+        "::warning::{} release-note bullet(s) in {} disagree with GitHub on PR "
+        "number or contributor.".format(len(findings), notes_file)
     )
 
     for line in summary_lines:
@@ -271,6 +363,10 @@ def run(
     # or that lack a `by @handle` attribution (the PR-time checks may have been
     # bypassed). Promotion proceeds regardless.
     _warn_bad_bullets(notes_text, notes_file)
+    # Non-blocking: resolve each well-formed (#N) against GitHub and flag bullets
+    # whose PR does not exist or whose @handle is not the PR's author. Skipped
+    # silently when the lookup is unavailable (no token / offline).
+    _warn_inaccurate_attribution(notes_text, notes_file, repo, token)
 
     # Drain mode: bullets come from the source file (notes_file, the base/feature
     # branch's block) while prior dated sections come from the destination changelog

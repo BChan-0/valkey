@@ -317,3 +317,49 @@ def test_clean_bullets_emit_no_warning(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "missing/malformed PR reference or attribution" not in captured.out
     assert "missing/malformed PR ref" not in captured.err
+
+
+def test_inaccurate_attribution_warns_wrong_handle_and_missing_pr(tmp_path, monkeypatch, capsys):
+    # Per-line accuracy check: resolve each (#N) and flag a wrong @handle or a (#N)
+    # that is not a real PR. Accurate and co-author-credited bullets are left alone.
+    notes = (
+        "p\n\n## Unreleased\n\n### Bug Fixes\n"
+        "* correct by @alice (#42)\n"
+        "* wrong handle by @bob (#43)\n"
+        "* nonexistent by @carol (#9999)\n"
+        "* malformed skipped by @x (#idk)\n"
+    )
+    authors = {42: "alice", 43: "realdev"}  # 9999 -> None (no such PR)
+    monkeypatch.setattr(
+        pr, "pr_author", lambda repo, number, token: None if number == 9999 else authors.get(number)
+    )
+    pr._warn_inaccurate_attribution(notes, "00-RELEASENOTES", "valkey-io/valkey", token="t")
+    err = capsys.readouterr().err
+    assert "credits @bob, but (#43) was authored by @realdev" in err
+    assert "(#9999) is not a pull request in valkey-io/valkey" in err
+    # Accurate bullet and the malformed-(#idk) bullet are not reported here.
+    assert "correct by @alice (#42)" not in err
+    assert "(#idk)" not in err
+
+
+def test_inaccurate_attribution_skips_when_lookup_unavailable(tmp_path, monkeypatch, capsys):
+    notes = "p\n\n## Unreleased\n\n### Bug Fixes\n* x by @a (#42)\n"
+
+    def boom(repo, number, token):
+        raise pr._PRLookupUnavailable("offline")
+
+    monkeypatch.setattr(pr, "pr_author", boom)
+    pr._warn_inaccurate_attribution(notes, "00-RELEASENOTES", "valkey-io/valkey", token=None)
+    captured = capsys.readouterr()
+    # Skipped silently: a notice on stderr, but no ::warning:: annotation.
+    assert "accuracy check skipped" in captured.err
+    assert "::warning::" not in captured.out
+
+
+def test_accurate_attribution_emits_no_warning(tmp_path, monkeypatch, capsys):
+    notes = "p\n\n## Unreleased\n\n### Bug Fixes\n* good by @alice (#42)\n"
+    monkeypatch.setattr(pr, "pr_author", lambda repo, number, token: "alice")
+    pr._warn_inaccurate_attribution(notes, "00-RELEASENOTES", "valkey-io/valkey", token="t")
+    captured = capsys.readouterr()
+    assert "::warning::" not in captured.out
+    assert "does not match GitHub" not in captured.err
