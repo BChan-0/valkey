@@ -377,13 +377,25 @@ def promote(
 ) -> str:
     """Promote the ``## Unreleased`` block into a new dated release section.
 
-    Returns the full rewritten file as a frozen release-branch changelog: a
-    regenerated title + urgency legend, the new dated section first, then any
-    previously dated sections after it. The ``## Unreleased`` block is dropped
-    entirely -- a cut release line is frozen and does not carry a running
-    changelog (see .github/workflows/release-notes-check.yml). Use
-    :func:`reset_unreleased` instead to empty (rather than remove) the block on a
-    branch that keeps accumulating notes.
+    Returns the full rewritten release-branch changelog: a regenerated title +
+    urgency legend, the new dated section first, then any previously dated
+    sections, and finally an **emptied** ``## Unreleased`` block at the foot.
+
+    Keeping (rather than dropping) an emptied block is what makes the
+    rc1 -> rc2 -> ... -> GA chain work. rc1 is cut from unstable, whose block
+    carries the bullets to promote; later stages are cut from the release branch,
+    where backported PRs accumulate their notes under this emptied block between
+    cuts. Each promote() reads that block into the new dated section and re-empties
+    it for the next stage. (Without it, every stage after rc1 would render an empty
+    section, since the release branch would have no block to read -- see
+    test_promote_chains_rc_to_ga.)
+
+    The block is placed *after* the dated sections (at the foot) on purpose:
+    :func:`parse_unreleased` reads from ``## Unreleased`` to the next ``##`` header
+    or EOF, so a foot-position block contains only its own categories and never
+    bleeds into the dated sections above it. Use :func:`reset_unreleased` for the
+    companion unstable-branch PR, which empties the block in place without cutting
+    a dated section.
     """
     major, minor, _ = parse_version(version)
     notes = parse_unreleased(text)
@@ -397,4 +409,5 @@ def promote(
     parts: List[str] = [render_header(major, minor), "", dated.rstrip()]
     if existing:
         parts += ["", existing]
+    parts += ["", render_empty_unreleased().rstrip()]
     return "\n".join(parts).rstrip() + "\n"

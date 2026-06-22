@@ -213,9 +213,9 @@ def test_promote_keeps_miscategorized_notes():
     out = rn.promote(
         SAMPLE_UNRECOGNIZED, version="9.1.0", stage="rc1", urgency="LOW", date="2026-06-11",
     )
-    # Promoted into the (frozen) dated section exactly once; no ## Unreleased block.
+    # Promoted into the dated section exactly once (not also left under the
+    # re-emptied Unreleased block, which carries no bullets).
     assert out.count("Big networking change someone miscategorized by @bob (#11)") == 1
-    assert "## Unreleased" not in out
 
 
 def test_render_invalid_urgency_and_stage():
@@ -243,7 +243,7 @@ def test_reset_unreleased_clears_bullets_preserves_preamble():
     assert "Changed the default of foo" not in reset
 
 
-def test_promote_builds_frozen_dated_section_without_unreleased_block():
+def test_promote_builds_dated_section_with_emptied_unreleased_block():
     out = rn.promote(
         SAMPLE, version="9.1.0", stage="ga", urgency="HIGH", date="2026-06-11",
         contributors=["Alice A @alice"],
@@ -254,10 +254,14 @@ def test_promote_builds_frozen_dated_section_without_unreleased_block():
     # Dated section with the promoted notes.
     assert "Valkey 9.1.0 GA" in out
     assert "Changed the default of foo by @alice (#100)" in out
-    # The release-branch file is frozen: no running ## Unreleased block remains,
-    # and parse_unreleased finds nothing (reset_unreleased() handles unstable).
-    assert "## Unreleased" not in out
-    assert rn.parse_unreleased(out) == {}
+    # The release branch keeps an *emptied* ## Unreleased block at the foot so the
+    # next stage's backports have somewhere to accumulate; the promoted bullets
+    # are gone from it (they now live in the dated section above).
+    assert "## Unreleased" in out
+    assert rn.is_unreleased_empty(rn.parse_unreleased(out))
+    assert "Changed the default of foo" not in out.split("## Unreleased", 1)[1]
+    # The emptied block sits below the dated section, not above it.
+    assert out.index("Valkey 9.1.0 GA") < out.index("## Unreleased")
 
 
 def test_promote_preserves_prior_dated_sections():
@@ -279,3 +283,39 @@ def test_promote_preserves_prior_dated_sections():
     assert "Old fix (#1)" in out  # prior section retained
     # New GA section appears before the older rc1 section.
     assert out.index("Valkey 9.1.0 GA") < out.index("Valkey 9.1.0-rc1")
+    # ...and the re-emptied Unreleased block trails the dated sections.
+    assert out.index("Valkey 9.1.0-rc1") < out.index("## Unreleased")
+    assert rn.is_unreleased_empty(rn.parse_unreleased(out))
+
+
+def test_promote_chains_rc_to_ga():
+    """rc1 (from unstable) -> backport -> rc2 (from release branch) must work.
+
+    Regression for the bug where promote() dropped the Unreleased block, so every
+    stage after rc1 -- cut from the release branch, which then had no block --
+    rendered an empty dated section. Keeping an emptied block at the foot lets
+    backported PRs accumulate between cuts and be promoted into the next stage.
+    """
+    unstable = (
+        "placeholder\n\n## Unreleased\n\n"
+        "### New Features and Enhanced Behavior\n* rc1 feature by @alice (#100)\n"
+    )
+    rc1 = rn.promote(unstable, version="9.1.0", stage="rc1", urgency="LOW", date="2026-03-17")
+    assert "rc1 feature by @alice (#100)" in rc1
+    assert rn.is_unreleased_empty(rn.parse_unreleased(rc1))
+
+    # A backport merges to the release branch, adding a bullet under the block.
+    backported = rc1.replace(
+        "## Unreleased\n",
+        "## Unreleased\n\n### Bug Fixes\n* Backported fix by @bob (#200)\n",
+        1,
+    )
+    rc2 = rn.promote(backported, version="9.1.0", stage="rc2", urgency="LOW", date="2026-04-28")
+
+    # The backport lands in the rc2 section; rc1's bullet is preserved once, below.
+    assert "Backported fix by @bob (#200)" in rc2
+    assert rc2.count("rc1 feature by @alice (#100)") == 1
+    assert rc2.index("Valkey 9.1.0-rc2") < rc2.index("Valkey 9.1.0-rc1")
+    # The block is re-emptied for the next stage and the backport is no longer in it.
+    assert rn.is_unreleased_empty(rn.parse_unreleased(rc2))
+    assert "Backported fix by @bob (#200)" not in rc2.split("## Unreleased", 1)[1]
