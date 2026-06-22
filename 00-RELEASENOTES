@@ -42,19 +42,19 @@ The CI check warns if you do.
 -->
 
 ### Behavior Changes
-* test 1 (behavior changes) by @BChan-0 (#22)
+* test comment 2.1 by @BChan-0 (#idk)
 
 ### New Features and Enhanced Behavior
 
 ### Performance and Efficiency Improvements
 
 ### Bug Fixes
+* test comment 2.2 by @BChan-0 (#idk)
 
 ### Command and API Updates
 
 ### Module API Changes
 
 ### Observability and Logging
-* test 2 (observability) by @BChan-0 (#22)
 
 ### Build and Tooling
