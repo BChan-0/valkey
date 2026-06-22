@@ -36,6 +36,7 @@ dropped. The CI check warns if you do.
 -->
 
 ### Behavior Changes
+* test comment 3.1 by @BChan-0 (#idk)
 
 ### New Features and Enhanced Behavior
 
@@ -44,6 +45,7 @@ dropped. The CI check warns if you do.
 ### Bug Fixes
 
 ### Command and API Updates
+* test comment 3.2 by @BChan-0 (#idk)
 
 ### Module API Changes
 
