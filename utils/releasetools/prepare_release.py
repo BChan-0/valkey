@@ -4,8 +4,9 @@
 Invoked by .github/workflows/prepare-release.yml. Given a target version,
 release stage, urgency, and date, it:
 
-1. promotes the ``## Unreleased`` block of 00-RELEASENOTES into a dated section
-   (dropping the ``## Unreleased`` block, since a cut release line is frozen),
+1. promotes the ``## Unreleased`` block of 00-RELEASENOTES into a dated section,
+   re-emptying the block at the foot of the file so the next stage's backports
+   (rc2, rc3, ... GA, all cut from the release branch) can accumulate there,
 2. injects a generated ``### Contributors`` list into that new section, and
 3. sets the version macros in src/version.h.
 
@@ -163,9 +164,10 @@ def run(
 ) -> int:
     # Unstable path: don't cut a dated section or bump the version, just empty the
     # ## Unreleased block so the bullets that were just promoted onto the release
-    # branch are cleared from unstable's running changelog and not promoted twice.
-    # (The frozen release-branch file, produced by the default path below via
-    # promote(), drops the block entirely.)
+    # branch are cleared from unstable's running changelog and not promoted twice
+    # when the next minor line forks. (The default path below, via promote(), also
+    # re-empties the block on the release branch -- see promote()'s docstring --
+    # so reset-only differs by skipping the dated section and the version bump.)
     if reset_unreleased_only:
         notes_text = _read(os.path.join(repo_dir, notes_file))
         new_notes = reset_unreleased(notes_text)

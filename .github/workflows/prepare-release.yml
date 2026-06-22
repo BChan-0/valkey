@@ -3,8 +3,15 @@
 # Dispatched manually by a maintainer with write access. It promotes the
 # `## Unreleased` block of 00-RELEASENOTES into a dated release section,
 # generates the contributor list, sets the version macros in src/version.h,
-# resets `## Unreleased` to empty, and opens a PR titled
-# "Update version to <version> and add release notes".
+# re-empties `## Unreleased`, and opens/updates a PR for the release branch.
+#
+# One long-running release branch per minor line carries the rc1 -> rcN -> GA
+# chain (no new branch per stage):
+#   * rc1 of M.m.p   -> create  pre-release-M.m.p   from the dispatch ref
+#   * rcN (N>1)       -> continue pre-release-M.m.p  (reads its running block)
+#   * GA of M.m.p     -> create  M.m  carrying pre-release-M.m.p's history,
+#                        then delete pre-release-M.m.p (a true rename)
+#   * later patches   -> continue the existing M.m branch (no rename)
 #
 # The heavy lifting lives in utils/releasetools/ (unit tested); this workflow
 # only wires inputs, auth, and the branch/commit/PR plumbing.
@@ -58,7 +65,7 @@ jobs:
     # EDIT BEFORE PR: Guard against forks running the release machinery with org secrets.
     # if: github.repository == 'valkey-io/valkey'
     runs-on: ubuntu-latest
-    # === FORK TEST — DELETE this permissions block before moving to valkey-io/valkey ===
+    # EDIT BEFORE PR: delete this permissions block
     # The built-in GITHUB_TOKEN needs write scope to push release-prep/* and open
     # the PR. In valkey-io/valkey the App token carries its own scopes, so the
     # job inherits the top-level `permissions: contents: read` and this is unneeded.
@@ -74,7 +81,7 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
-      # === FORK TEST — DELETE this step before moving to valkey-io/valkey ===
+      # EDIT BEFORE PR:
       # No VALKEYRIE_BOT_* secrets exist in a personal fork, so the App-token step
       # below fails immediately. For fork testing we skip token generation entirely
       # and use the built-in GITHUB_TOKEN (scoped via the job `permissions` block
@@ -98,7 +105,87 @@ jobs:
       #     permission-contents: write
       #     permission-pull-requests: write
 
-      - name: Prepare release notes and version bump
+      - name: Resolve the running release branch
+        id: branch
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ inputs.version }}
+          STAGE: ${{ inputs.release_stage }}
+        run: |
+          set -euo pipefail
+
+          # Split MAJOR.MINOR.PATCH and the stage.
+          IFS='.' read -r MAJOR MINOR PATCH <<<"${VERSION}"
+          STAGE_LC="$(printf '%s' "${STAGE}" | tr '[:upper:]' '[:lower:]')"
+
+          # One long-running branch per minor line:
+          #   rc stages -> pre-release-M.m.p
+          #   ga / later -> M.m   (the rc branch is renamed to this at GA)
+          PRE_BRANCH="pre-release-${MAJOR}.${MINOR}.${PATCH}"
+          GA_BRANCH="${MAJOR}.${MINOR}"
+
+          # remote branch existence helper
+          exists() { git ls-remote --exit-code --heads origin "refs/heads/$1" >/dev/null 2>&1; }
+
+          if [ "${STAGE_LC}" = "ga" ]; then
+            TARGET="${GA_BRANCH}"
+            # Base GA on the existing rc branch (carrying its history) if present;
+            # if GA already exists (re-run / later patch), continue it; else fall
+            # back to the dispatch ref (a GA with no prior rc).
+            if exists "${GA_BRANCH}"; then
+              BASE_REF="${GA_BRANCH}";  CONTINUE="true";  RENAME_FROM=""
+            elif exists "${PRE_BRANCH}"; then
+              BASE_REF="${PRE_BRANCH}"; CONTINUE="true";  RENAME_FROM="${PRE_BRANCH}"
+            else
+              BASE_REF="${GITHUB_REF_NAME}"; CONTINUE="false"; RENAME_FROM=""
+            fi
+          else
+            TARGET="${PRE_BRANCH}"
+            RENAME_FROM=""
+            # rcN>1 continues the existing pre-release branch; rc1 (or a missing
+            # branch) starts fresh from the dispatch ref.
+            if exists "${PRE_BRANCH}"; then
+              BASE_REF="${PRE_BRANCH}"; CONTINUE="true"
+            else
+              BASE_REF="${GITHUB_REF_NAME}"; CONTINUE="false"
+              # A later rc (rcN, N>1) expects the running branch from the previous
+              # rc. If it is missing, this cut starts fresh from the dispatch ref,
+              # so any notes accumulated on pre-release-M.m.p between cuts are NOT
+              # carried over -- warn (non-blocking) so a maintainer can confirm the
+              # branch was meant to be gone rather than deleted by accident.
+              if [[ "${STAGE_LC}" =~ ^rc([0-9]+)$ ]] && [ "${BASH_REMATCH[1]}" -gt 1 ]; then
+                PREV_RC="rc$(( BASH_REMATCH[1] - 1 ))"
+                MSG="No running release branch ${PRE_BRANCH} found for ${STAGE_LC} (expected from ${PREV_RC}). Starting fresh from ${GITHUB_REF_NAME}; notes accumulated on a prior rc are not carried over."
+                echo "::warning::${MSG}"
+                echo "⚠️ ${MSG}" >> "$GITHUB_STEP_SUMMARY"
+              fi
+            fi
+          fi
+
+          {
+            echo "target=${TARGET}"
+            echo "base_ref=${BASE_REF}"
+            echo "continue=${CONTINUE}"
+            echo "rename_from=${RENAME_FROM}"
+            echo "stage_lc=${STAGE_LC}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved: stage=${STAGE_LC} target=${TARGET} base=${BASE_REF} continue=${CONTINUE} rename_from=${RENAME_FROM:-<none>}"
+
+      - name: Check out the release branch base
+        env:
+          TARGET: ${{ steps.branch.outputs.target }}
+          BASE_REF: ${{ steps.branch.outputs.base_ref }}
+        run: |
+          set -euo pipefail
+          # Work on TARGET starting from BASE_REF. For a continued branch this puts
+          # the running ## Unreleased block (with backports accumulated since the
+          # last cut) into the working tree so promote() reads it. The release
+          # tooling under utils/releasetools/ stays available because BASE_REF is a
+          # release branch forked from a ref that already carries it.
+          git fetch origin "${BASE_REF}"
+          git checkout -B "${TARGET}" "origin/${BASE_REF}"
+
+      - name: Promote notes and bump version
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           VERSION: ${{ inputs.version }}
@@ -120,64 +207,97 @@ jobs:
           fi
           python3 "${args[@]}"
 
-      - name: Create branch, commit, and open release PR
+      - name: Commit, push, and open/update the release PR
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           VERSION: ${{ inputs.version }}
           STAGE: ${{ inputs.release_stage }}
+          TARGET: ${{ steps.branch.outputs.target }}
+          STAGE_LC: ${{ steps.branch.outputs.stage_lc }}
+          RENAME_FROM: ${{ steps.branch.outputs.rename_from }}
         run: |
           set -euo pipefail
-          BRANCH="release-prep/${VERSION}-${STAGE}"
-          TITLE="Update version to ${VERSION} and add release notes"
+
+          # Stage-qualified version and PR/commit title, matching existing
+          # release PRs. The VERSION input is only MAJOR.MINOR.PATCH, so the
+          # stage suffix and the title form are derived here:
+          #   rc stages -> "Update version to 9.1.0-rc2 and add release notes"
+          #                (cf. #3521 rc2, #3333 rc1)
+          #   ga        -> "Add release notes entry for Valkey 9.1.0 GA"
+          #                (cf. #3682; GA uses a distinct title -- not
+          #                "Update version to ..." -- and the bare version)
+          if [ "${STAGE_LC}" = "ga" ]; then
+            RELEASE_NAME="${VERSION}"
+            TITLE="Add release notes entry for Valkey ${RELEASE_NAME} GA"
+          else
+            RELEASE_NAME="${VERSION}-${STAGE_LC}"
+            TITLE="Update version to ${RELEASE_NAME} and add release notes"
+          fi
 
           # Identity for the signed-off commit (Valkeyrie bot).
           git config user.name "valkey-ci-bot"
           git config user.email "valkey-ci-bot@users.noreply.github.com"
 
-          git checkout -b "${BRANCH}"
           git add 00-RELEASENOTES src/version.h
-
           if git diff --cached --quiet; then
             echo "No changes to commit; nothing to prepare." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-
           git commit -s -m "${TITLE}"
 
-          # Authenticated push for the App token. The release-prep/* namespace is
-          # owned solely by this workflow, so a force push is safe and lets a
-          # re-dispatch for the same version/stage cleanly replace the branch.
+          # Push the running release branch. It is owned solely by this workflow,
+          # so a force push is safe and lets a re-dispatch cleanly replace the tip.
           git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-            "HEAD:${BRANCH}"
+            "HEAD:${TARGET}"
+
+          # GA rename: the rc line's history now lives on ${TARGET} (= M.m); delete
+          # the old pre-release-M.m.p branch so only one running branch survives.
+          # Deleting it closes any PR still open from that branch -- by policy the
+          # prior rcN PRs are merged before a new stage is cut, so nothing live is
+          # lost. Best-effort: a missing branch is not an error.
+          if [ -n "${RENAME_FROM}" ]; then
+            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+              --delete "${RENAME_FROM}" || echo "Note: could not delete ${RENAME_FROM} (already gone?)."
+            echo "Renamed \`${RENAME_FROM}\` -> \`${TARGET}\` (deleted the old branch)." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           BODY=$(cat <<EOF
-          Automated release preparation for **${VERSION}** (\`${STAGE}\`).
+          Automated release preparation for **${RELEASE_NAME}** (\`${STAGE}\`).
 
           - Promoted the \`## Unreleased\` block of \`00-RELEASENOTES\` into a dated section
           - Generated the contributor list for this release
-          - Dropped the \`## Unreleased\` block (a cut release line is frozen)
+          - Re-emptied the \`## Unreleased\` block so the next stage's backports can accumulate
           - Set the version macros in \`src/version.h\`
 
-          Generated by the \`prepare-release\` workflow. Please review the notes,
-          urgency, and any Security Fixes before merging.
+          This is the running release branch \`${TARGET}\` for the ${VERSION%.*} line;
+          each rc/GA cut adds onto it. Please review the notes, urgency, and any
+          Security Fixes before merging.
 
           A companion PR resets the \`## Unreleased\` block on \`${{ inputs.unstable_branch }}\`.
           EOF
           )
 
+          # Open a PR for this branch, or update the open one. By policy a prior
+          # rcN PR is merged before the next stage is cut, so gh pr create
+          # normally opens a fresh PR; if one is still open for ${TARGET} it is
+          # updated in place instead.
           gh pr create \
             --base "${GITHUB_REF_NAME}" \
-            --head "${BRANCH}" \
+            --head "${TARGET}" \
             --title "${TITLE}" \
             --body "${BODY}" \
-            || gh pr edit "${BRANCH}" --title "${TITLE}" --body "${BODY}"
+            || gh pr edit "${TARGET}" --title "${TITLE}" --body "${BODY}"
 
           echo "## Prepared release ${VERSION} (${STAGE})" >> "$GITHUB_STEP_SUMMARY"
-          echo "Opened release PR from \`${BRANCH}\` into \`${GITHUB_REF_NAME}\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "Pushed \`${TARGET}\` and opened/updated its PR into \`${GITHUB_REF_NAME}\`." >> "$GITHUB_STEP_SUMMARY"
 
       # Companion PR: clear the just-released bullets from the unstable branch's
-      # running ## Unreleased block. The release-branch file is frozen (no block),
-      # but unstable must keep an emptied block for future PRs to append to. We cut
+      # running ## Unreleased block. The release PR re-empties the block on the
+      # release branch itself (for that line's later-stage backports); this
+      # separate PR empties unstable's block so the bullets that just shipped are
+      # not promoted again when the next minor line forks. Typically set
+      # unstable_branch only for the rc1 cut (the fork point) and leave it empty
+      # for rc2/rc3/GA, whose notes come from backports, not from unstable. We cut
       # a fresh checkout of the unstable branch so this never carries the dated
       # section or the version bump from the release PR above.
       - name: Reset Unreleased on unstable and open companion PR
@@ -188,12 +308,13 @@ jobs:
           VERSION: ${{ inputs.version }}
           STAGE: ${{ inputs.release_stage }}
           UNSTABLE: ${{ inputs.unstable_branch }}
+          TARGET: ${{ steps.branch.outputs.target }}
         run: |
           set -euo pipefail
-          # Skip cleanly if the release step found nothing to commit (no branch).
-          BRANCH="release-prep/${VERSION}-${STAGE}"
-          if ! git rev-parse --verify "${BRANCH}" >/dev/null 2>&1; then
-            echo "No release branch ${BRANCH}; skipping unstable reset." >> "$GITHUB_STEP_SUMMARY"
+          # Skip cleanly if the release step found nothing to commit (no local
+          # checkout of the running release branch).
+          if ! git rev-parse --verify "${TARGET}" >/dev/null 2>&1; then
+            echo "No release branch ${TARGET}; skipping unstable reset." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 

@@ -25,7 +25,9 @@ permissions:
 jobs:
   check:
     name: Check release-notes label and entry
-    # EDIT FOR PR: (Add back) Only gate PRs targeting unstable; release branches keep a frozen file.
+    # EDIT FOR PR: (Add back) Only gate PRs targeting unstable. The per-PR label
+    # policy governs the unstable changelog; release-branch notes accumulate from
+    # backported PRs and are finalized when a stage is cut, so they are not gated here.
     # if: github.event.pull_request.base.ref == 'unstable'
     runs-on: ubuntu-latest
     steps:

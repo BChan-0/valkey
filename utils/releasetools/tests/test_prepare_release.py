@@ -64,8 +64,11 @@ def test_dry_run_promotes_notes_and_reports_version(tmp_path, monkeypatch, capsy
     assert "Valkey 9.1.0-rc1" in out
     assert "Fixed a real crash by @alice (#10)" in out
     assert "### Contributors" in out and "* Alice A @alice" in out
-    # The promoted (frozen) file carries no running ## Unreleased block.
-    assert "## Unreleased" not in out.split("===== version.h", 1)[0]
+    # The promoted release-branch file keeps an emptied ## Unreleased block (for
+    # the next stage's backports), but the just-promoted bullet is not left in it.
+    notes_out = out.split("===== version.h", 1)[0]
+    assert "## Unreleased" in notes_out
+    assert "Fixed a real crash by @alice (#10)" not in notes_out.split("## Unreleased", 1)[1]
     # Version macros computed correctly (the bump_version bug-fix path).
     assert "VALKEY_VERSION=9.1.0 VALKEY_VERSION_NUM=0x00090100 VALKEY_RELEASE_STAGE=rc1" in out
     # Dry run must not touch the working files (source still has its block).
@@ -80,10 +83,11 @@ def test_dry_run_writes_files_when_not_dry(tmp_path, monkeypatch):
     assert rc == 0
     notes = (tmp_path / "00-RELEASENOTES").read_text()
     version = (tmp_path / "version.h").read_text()
-    # Frozen release-branch file: dated section, no ## Unreleased block; version
-    # macros rewritten.
+    # Release-branch file: dated section plus an emptied ## Unreleased block at the
+    # foot (so the next stage's backports can accumulate); version macros rewritten.
     assert "Valkey 9.1.0-rc1" in notes
-    assert "## Unreleased" not in notes
+    assert "## Unreleased" in notes
+    assert notes.index("Valkey 9.1.0-rc1") < notes.index("## Unreleased")
     assert '#define VALKEY_VERSION "9.1.0"' in version
     assert "#define VALKEY_VERSION_NUM 0x00090100" in version
     assert '#define VALKEY_RELEASE_STAGE "rc1"' in version
