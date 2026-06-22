@@ -227,7 +227,7 @@ jobs:
           fi
           python3 "${args[@]}"
 
-      - name: Commit and push the release branch, open/update its PR
+      - name: Commit and push the release branch
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           VERSION: ${{ inputs.version }}
@@ -239,9 +239,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Stage-qualified version and PR/commit title, matching existing
-          # release PRs. The VERSION input is only MAJOR.MINOR.PATCH, so the
-          # stage suffix and the title form are derived here:
+          # ${TARGET} (pre-release-M.m.p, or M.m at GA) is a standalone long-running
+          # release branch: tags/releases are cut from it directly. We only push it
+          # here -- NO pull request is opened. Opening a PR into the dispatch/base
+          # branch would wrongly propose merging the release line back into it; the
+          # release line never merges back. The base branch's ## Unreleased block is
+          # emptied by the separate companion PR below.
+
+          # Stage-qualified version and commit title, matching existing release
+          # commits. The VERSION input is only MAJOR.MINOR.PATCH, so the stage
+          # suffix and the title form are derived here:
           #   rc stages -> "Update version to 9.1.0-rc2 and add release notes"
           #                (cf. #3521 rc2, #3333 rc1)
           #   ga        -> "Add release notes entry for Valkey 9.1.0 GA"
@@ -277,44 +284,17 @@ jobs:
 
           # GA rename: the rc line's history now lives on ${TARGET} (= M.m); delete
           # the old pre-release-M.m.p branch so only one running branch survives.
-          # Deleting it closes any PR still open from that branch -- by policy the
-          # prior rcN PRs are merged before a new stage is cut, so nothing live is
-          # lost. Best-effort: a missing branch is not an error.
+          # Best-effort: a missing branch is not an error.
           if [ -n "${RENAME_FROM}" ]; then
             git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
               --delete "${RENAME_FROM}" || echo "Note: could not delete ${RENAME_FROM} (already gone?)."
             echo "Renamed \`${RENAME_FROM}\` -> \`${TARGET}\` (deleted the old branch)." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          BODY=$(cat <<EOF
-          Automated release preparation for **${RELEASE_NAME}** (\`${STAGE}\`).
-
-          - Drained the \`## Unreleased\` block of the base branch into a new dated section
-          - Generated the contributor list for this release
-          - Set the version macros in \`src/version.h\`
-
-          This is the running release branch \`${TARGET}\` for the ${VERSION%.*} line;
-          each rc/GA cut drains the base branch's notes onto it. The base branch's
-          \`## Unreleased\` block is emptied by the companion PR below. Please review
-          the notes, urgency, and any Security Fixes before merging.
-          EOF
-          )
-
-          # Open a PR for this branch, or update the open one. By policy a prior
-          # rcN PR is merged before the next stage is cut, so gh pr create
-          # normally opens a fresh PR; if one is still open for ${TARGET} it is
-          # updated in place instead.
-          gh pr create \
-            --base "${GITHUB_REF_NAME}" \
-            --head "${TARGET}" \
-            --title "${TITLE}" \
-            --body "${BODY}" \
-            || gh pr edit "${TARGET}" --title "${TITLE}" --body "${BODY}"
-
           git worktree remove --force "${WT}"
 
           echo "## Prepared release ${VERSION} (${STAGE})" >> "$GITHUB_STEP_SUMMARY"
-          echo "Pushed \`${TARGET}\` and opened/updated its PR into \`${GITHUB_REF_NAME}\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "Pushed the running release branch \`${TARGET}\` (no PR; cut tags/releases from it directly)." >> "$GITHUB_STEP_SUMMARY"
 
       # Companion PR: empty the base branch's ## Unreleased block. This cut drained
       # those bullets onto the running release branch, so they must be cleared from
@@ -383,6 +363,13 @@ jobs:
           EOF
           )
 
+          # MANUAL CLEANUP: this workflow does not delete ${RESET_BRANCH} after the
+          # companion PR merges (the repo's "Automatically delete head branches"
+          # setting is off, and we don't force it here). Whoever triggers this
+          # workflow is responsible for deleting the branch once the companion PR
+          # is merged, e.g. `git push origin --delete ${RESET_BRANCH}` or the
+          # "Delete branch" button on the merged PR. The release branch (${TARGET})
+          # is long-lived and must NOT be deleted.
           gh pr create \
             --base "${BASE_BRANCH}" \
             --head "${RESET_BRANCH}" \
@@ -392,4 +379,8 @@ jobs:
 
           git worktree remove --force "${WT}"
 
-          echo "Opened companion PR from \`${RESET_BRANCH}\` into \`${BASE_BRANCH}\`." >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "Opened companion PR from \`${RESET_BRANCH}\` into \`${BASE_BRANCH}\`."
+            echo "**Action required:** after merging the companion PR, delete the"
+            echo "leftover branch \`${RESET_BRANCH}\` (it is not removed automatically)."
+          } >> "$GITHUB_STEP_SUMMARY"

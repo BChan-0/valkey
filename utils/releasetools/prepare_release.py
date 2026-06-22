@@ -202,7 +202,7 @@ def run(
     # (prior_notes_file, the running pre-release branch). The promoted changelog is
     # frozen -- no ## Unreleased block -- and written to the destination path. The
     # base branch's block is emptied separately via --reset-unreleased-only. Without
-    # prior_notes_file this stays single-file (legacy) promotion.
+    # prior_notes_file this stays single-file (legacy) in-place promotion.
     prior_text: Optional[str] = None
     out_notes_file = notes_file
     if prior_notes_file:
