@@ -144,6 +144,25 @@ jobs:
             # branch) starts fresh from the dispatch ref.
             if exists "${PRE_BRANCH}"; then
               BASE_REF="${PRE_BRANCH}"; CONTINUE="true"
+              # Out-of-sequence guard: a continued rc should be exactly one past the
+              # highest rc already recorded on the running branch. A repeat
+              # (N <= highest, re-cutting an existing rc) or a skip (N > highest+1,
+              # leaving a gap) is probably a mis-dispatched stage -- warn
+              # (non-blocking) so a maintainer confirms the number before it ships.
+              if [[ "${STAGE_LC}" =~ ^rc([0-9]+)$ ]]; then
+                N="${BASH_REMATCH[1]}"
+                git fetch --quiet origin "${PRE_BRANCH}"
+                HIGHEST="$(git show "FETCH_HEAD:00-RELEASENOTES" 2>/dev/null \
+                  | sed -nE "s/^Valkey ${MAJOR}\.${MINOR}\.${PATCH}-rc([0-9]+).*/\1/p" \
+                  | sort -n | tail -1 || true)"
+                HIGHEST="${HIGHEST:-0}"
+                EXPECTED=$(( HIGHEST + 1 ))
+                if [ "${N}" -ne "${EXPECTED}" ]; then
+                  MSG="Dispatched ${STAGE_LC}, but ${PRE_BRANCH} already records up to rc${HIGHEST} (expected rc${EXPECTED}). Cutting it anyway -- double-check the stage: a repeat re-cuts an existing rc, a skip leaves a gap in the rc sequence."
+                  echo "::warning::${MSG}"
+                  echo "⚠️ ${MSG}" >> "$GITHUB_STEP_SUMMARY"
+                fi
+              fi
             else
               BASE_REF="${GITHUB_REF_NAME}"; CONTINUE="false"
               # A later rc (rcN, N>1) expects the running branch from the previous

@@ -71,3 +71,44 @@ def test_main_prints_header(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "### Contributors" in out
     assert "* Alice A @alice" in out
+
+
+def test_pr_author_returns_login(monkeypatch):
+    monkeypatch.setattr(gc, "_api_get", lambda url, token: {"user": {"login": "alice"}})
+    assert gc.pr_author("valkey-io/valkey", 42, token="t") == "alice"
+
+
+def test_pr_author_none_on_404(monkeypatch):
+    import urllib.error
+
+    def raise_404(url, token):
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(gc, "_api_get", raise_404)
+    assert gc.pr_author("valkey-io/valkey", 9999, token="t") is None
+
+
+def test_pr_author_unavailable_on_network_error(monkeypatch):
+    import urllib.error
+
+    import pytest
+
+    def raise_urlerror(url, token):
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(gc, "_api_get", raise_urlerror)
+    with pytest.raises(gc._PRLookupUnavailable):
+        gc.pr_author("valkey-io/valkey", 42, token=None)
+
+
+def test_pr_author_unavailable_on_5xx(monkeypatch):
+    import urllib.error
+
+    import pytest
+
+    def raise_500(url, token):
+        raise urllib.error.HTTPError(url, 500, "Server Error", {}, None)
+
+    monkeypatch.setattr(gc, "_api_get", raise_500)
+    with pytest.raises(gc._PRLookupUnavailable):
+        gc.pr_author("valkey-io/valkey", 42, token="t")
