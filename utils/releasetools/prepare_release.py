@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import os
+import re
 import subprocess
 import sys
 from typing import List, Optional
@@ -146,6 +147,76 @@ def _warn_unrecognized(notes_text: str, notes_file: str) -> None:
             pass
 
 
+# A valid bullet ends with its PR number, "(#123)", and credits a contributor with
+# "by @handle". These mirror check_release_notes._TRAILING_PR_REF_RE and _AUTHOR_RE,
+# the PR-time gates: the ref is digits-only at the end of the bullet (so "(#idk)"
+# fails), and the attribution may appear anywhere in the bullet.
+_TRAILING_PR_REF_RE = re.compile(r"\(#\d+\)\s*$")
+_AUTHOR_RE = re.compile(r"by @[\w-]+")
+
+
+def _warn_bad_bullets(notes_text: str, notes_file: str) -> None:
+    """Warn (non-blocking) about promoted bullets missing a PR ref or attribution.
+
+    Every bullet in the ``## Unreleased`` block is promoted verbatim into the dated
+    section, so a bullet lacking a valid trailing ``(#123)`` or a ``by @handle``
+    attribution ships that way in the published notes. The PR-time checks
+    (check_release_notes._require_pr_refs / _require_authors) normally catch this,
+    but a bullet can reach the base branch without that gate (a direct push, or a
+    PR where the check was skipped), and promotion does not re-run them. This is a
+    second line of defence: surfaced three ways -- stderr, a GitHub Actions
+    ``::warning::`` annotation, and the job summary -- mirroring _warn_unrecognized.
+    It does not block the cut; a maintainer should fix the bullet on the base
+    branch. Reserved sections are excluded (their bullets are dropped, not promoted).
+    """
+    notes = parse_unreleased(notes_text)
+    reserved = set(reserved_sections_present(notes))
+    # Each offending bullet maps to the list of problems it has, so a bullet that
+    # is missing both is reported once with both reasons.
+    offenders: List["tuple[str, List[str]]"] = []
+    for category, bullets in notes.items():
+        if category in reserved:
+            continue
+        for bullet in bullets:
+            text = bullet.strip()
+            problems: List[str] = []
+            if not _TRAILING_PR_REF_RE.search(text):
+                problems.append("missing/malformed PR ref `(#123)`")
+            if not _AUTHOR_RE.search(text):
+                problems.append("missing `by @handle` attribution")
+            if problems:
+                offenders.append((text, problems))
+    if not offenders:
+        return
+
+    summary_lines = [
+        "⚠️ {} promoted bullet(s) in {} have a missing or malformed PR reference "
+        "(`(#123)`) and/or contributor attribution (`by @handle`). They were "
+        "promoted as-is -- please fix them on the base branch:".format(
+            len(offenders), notes_file
+        ),
+        "",
+    ]
+    for text, problems in offenders:
+        summary_lines.append("  {}  -- {}".format(text, "; ".join(problems)))
+    # One concise annotation for the Actions UI.
+    print(
+        "::warning::{} release-note bullet(s) in {} have a missing/malformed PR "
+        "reference or attribution.".format(len(offenders), notes_file)
+    )
+
+    for line in summary_lines:
+        print(line, file=sys.stderr)
+
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        try:
+            with open(summary_path, "a", encoding="utf-8") as fh:
+                fh.write("\n".join(["## Release notes warnings", ""] + summary_lines) + "\n")
+        except OSError:
+            pass
+
+
 def run(
     *,
     version: str,
@@ -196,6 +267,10 @@ def run(
     # Non-blocking: flag any notes under typo'd/invented categories. They are
     # still promoted verbatim below, so the release is never blocked on them.
     _warn_unrecognized(notes_text, notes_file)
+    # Non-blocking: flag promoted bullets whose trailing (#N) is missing/malformed
+    # or that lack a `by @handle` attribution (the PR-time checks may have been
+    # bypassed). Promotion proceeds regardless.
+    _warn_bad_bullets(notes_text, notes_file)
 
     # Drain mode: bullets come from the source file (notes_file, the base/feature
     # branch's block) while prior dated sections come from the destination changelog
