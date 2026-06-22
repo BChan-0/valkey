@@ -209,3 +209,43 @@ def test_reserved_section_warning_in_job_summary(tmp_path, monkeypatch):
     assert "Release notes warnings" in text
     assert "not** promoted" in text or "not promoted" in text.replace("**", "")
     assert "(CVE-2026-9) hand-added by someone" in text
+
+
+def test_drain_mode_writes_frozen_destination_and_bumps_its_version(tmp_path, monkeypatch):
+    # Drain mode: --prior-notes-file points at the destination (release branch)
+    # changelog. Bullets come from the source notes file; the destination is written
+    # frozen (no ## Unreleased) and its version.h is bumped. The source file is left
+    # untouched by promotion (emptied separately via --reset-unreleased-only).
+    monkeypatch.setattr(pr, "list_contributors", lambda *a, **k: [])
+    src = tmp_path / "src_notes"
+    dst = tmp_path / "dst_notes"
+    ver = tmp_path / "dst_version.h"
+    src.write_text("Preamble.\n\n## Unreleased\n\n### Bug Fixes\n* Backport C by @carol (#30)\n")
+    dst.write_text(
+        "Valkey 9.1 release notes\n========================\n\n"
+        "Valkey 9.1.0-rc1  -  Released Mon 01 June 2026\n"
+        "---------------------------------------------\n\n"
+        "Upgrade urgency LOW: This is the first release candidate of Valkey 9.1.0.\n\n"
+        "### New Features and Enhanced Behavior\n* rc1 feature by @alice (#10)\n"
+    )
+    ver.write_text(VERSION_H)
+
+    rc = pr.run(
+        version="9.1.0", stage="rc2", urgency="LOW", date="2026-04-28",
+        repo="valkey-io/valkey", base_ref="v9.0.0", token=None,
+        repo_dir=str(tmp_path), notes_file=str(src),
+        prior_notes_file=str(dst), version_file=str(ver),
+        security_fixes=None, dry_run=False,
+    )
+    assert rc == 0
+    dst_text = dst.read_text()
+    # Destination: frozen, rc2 prepended above retained rc1.
+    assert "Backport C by @carol (#30)" in dst_text
+    assert dst_text.index("Valkey 9.1.0-rc2") < dst_text.index("Valkey 9.1.0-rc1")
+    assert "## Unreleased" not in dst_text
+    # Destination version bumped.
+    assert '#define VALKEY_VERSION "9.1.0"' in ver.read_text()
+    assert '#define VALKEY_RELEASE_STAGE "rc2"' in ver.read_text()
+    # Source notes file untouched by promotion.
+    assert "Backport C by @carol (#30)" in src.read_text()
+    assert "## Unreleased" in src.read_text()

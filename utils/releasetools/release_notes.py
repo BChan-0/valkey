@@ -267,7 +267,6 @@ def render_version_section(
     urgency: str,
     date: str,
     notes: "Dict[str, List[str]]",
-    contributors: Optional[Sequence[str]] = None,
     security_fixes: Optional[Sequence[str]] = None,
 ) -> str:
     """Render one dated release section in release-branch markdown form.
@@ -280,11 +279,13 @@ def render_version_section(
     callers warn on them via :func:`unrecognized_categories`. The reserved
     sections (:data:`RESERVED_SECTIONS`) are never read from *notes* -- a
     ``Security Fixes`` or ``Contributors`` section a contributor hand-added to the
-    block is ignored here, since *security_fixes* and *contributors* are the
-    source of truth, and rendering both would duplicate the header.
-    *contributors* is a list of display strings (``"Jane Doe @jdoe"``) rendered
-    under a trailing ``### Contributors`` section. *security_fixes* is an optional
-    list of CVE bullet strings.
+    block is ignored here, since *security_fixes* is the source of truth for the
+    former and the latter is rendered once for the whole file (not per section).
+    *security_fixes* is an optional list of CVE bullet strings.
+
+    Contributors are deliberately *not* rendered here: a single cumulative
+    ``### Contributors`` footer for the whole file is rendered by
+    :func:`render_contributors_footer` and assembled in :func:`promote`.
     """
     stage = _normalize_stage(stage)
     urgency = urgency.strip().upper()
@@ -321,15 +322,6 @@ def render_version_section(
     for category in unrecognized_categories(notes):
         emit_category(category, notes[category])
 
-    if contributors:
-        out.append("### Contributors")
-        for name in contributors:
-            name = name.strip()
-            if not name.startswith(("* ", "- ")):
-                name = "* " + name
-            out.append(name)
-        out.append("")
-
     return "\n".join(out).rstrip() + "\n"
 
 
@@ -357,6 +349,71 @@ def reset_unreleased(text: str) -> str:
     return text[: idx + 1] + render_empty_unreleased()
 
 
+_CONTRIBUTORS_HEADER_RE = re.compile(r"^###\s+Contributors\s*$", re.MULTILINE)
+
+
+def _strip_bullet(line: str) -> str:
+    """Return *line* trimmed of a leading ``* ``/``- `` bullet marker."""
+    s = line.strip()
+    if s.startswith(("* ", "- ")):
+        return s[2:].strip()
+    return s
+
+
+def _split_contributors_footer(text: str) -> "tuple[str, List[str]]":
+    """Split *text* at its trailing ``### Contributors`` section.
+
+    Returns ``(body, contributors)`` where *body* is everything before the last
+    ``### Contributors`` header (right-stripped) and *contributors* is the list of
+    display names parsed from that section (bullet markers removed). When no such
+    header exists, returns ``(text, [])``. Using the *last* header means a legacy
+    per-section ``### Contributors`` is folded into the cumulative footer on the
+    next promote(), migrating old files to the single-footer layout.
+    """
+    matches = list(_CONTRIBUTORS_HEADER_RE.finditer(text))
+    if not matches:
+        return text, []
+    last = matches[-1]
+    body = text[: last.start()].rstrip()
+    names: List[str] = []
+    for line in text[last.end():].splitlines():
+        # The footer's bullets run until the next header. Stopping here matters in
+        # legacy mode, where the footer precedes the ## Unreleased block: without
+        # the break we would scoop up the example bullet inside that block's
+        # guidance comment as if it were a contributor.
+        if line.lstrip().startswith("#"):
+            break
+        if _BULLET_RE.match(line):
+            names.append(_strip_bullet(line))
+    return body, names
+
+
+def render_contributors_footer(contributors: Sequence[str]) -> str:
+    """Render the cumulative ``### Contributors`` footer, deduped and alpha-sorted.
+
+    *contributors* is a list of display strings (``"Jane Doe @jdoe"``), possibly
+    with duplicates carried across cuts. They are de-duplicated case-insensitively
+    (first spelling wins) and sorted by the display-name portion before ``@``,
+    matching gen_contributors. Returns ``""`` when the list is empty.
+    """
+    seen: set = set()
+    unique: List[str] = []
+    for entry in contributors:
+        name = _strip_bullet(entry)
+        if not name:
+            continue
+        key = name.casefold()
+        if key not in seen:
+            seen.add(key)
+            unique.append(name)
+    if not unique:
+        return ""
+    unique.sort(key=lambda e: e.split(" @", 1)[0].casefold())
+    out = ["### Contributors"]
+    out.extend("* {}".format(name) for name in unique)
+    return "\n".join(out)
+
+
 def _existing_dated_sections(before_unreleased: str) -> str:
     """Return the dated-section region of the text preceding ``## Unreleased``."""
     match = _DATED_SECTION_RE.search(before_unreleased)
@@ -374,40 +431,71 @@ def promote(
     date: str,
     contributors: Optional[Sequence[str]] = None,
     security_fixes: Optional[Sequence[str]] = None,
+    prior_text: Optional[str] = None,
 ) -> str:
-    """Promote the ``## Unreleased`` block into a new dated release section.
+    """Promote a ``## Unreleased`` block into a new dated release section.
 
-    Returns the full rewritten release-branch changelog: a regenerated title +
-    urgency legend, the new dated section first, then any previously dated
-    sections, and finally an **emptied** ``## Unreleased`` block at the foot.
+    The bullets to promote always come from the ``## Unreleased`` block of *text*.
+    Two output shapes, selected by *prior_text*:
 
-    Keeping (rather than dropping) an emptied block is what makes the
-    rc1 -> rc2 -> ... -> GA chain work. rc1 is cut from unstable, whose block
-    carries the bullets to promote; later stages are cut from the release branch,
-    where backported PRs accumulate their notes under this emptied block between
-    cuts. Each promote() reads that block into the new dated section and re-empties
-    it for the next stage. (Without it, every stage after rc1 would render an empty
-    section, since the release branch would have no block to read -- see
-    test_promote_chains_rc_to_ga.)
+    **Two-source (drain) mode -- when *prior_text* is given.** *text* is the
+    *source* branch's file (the base/feature branch, whose block accumulates the
+    bullets) and *prior_text* is the *destination* branch's existing changelog
+    (the pre-release branch, which carries earlier dated sections). The result is
+    the destination's frozen changelog: title + legend, the new dated section,
+    then *prior_text*'s previously dated sections -- and **no** ``## Unreleased``
+    block, because the destination does not accumulate notes; the source branch
+    does (and is emptied separately with :func:`reset_unreleased`). This is the
+    rc1 -> rcN -> GA flow: every cut drains the base branch's block onto the
+    running pre-release branch.
 
-    The block is placed *after* the dated sections (at the foot) on purpose:
+    **Single-source (legacy) mode -- when *prior_text* is None.** *text* supplies
+    both the bullets and the prior dated sections, and the result re-emits an
+    **emptied** ``## Unreleased`` block at the foot so a single file can keep
+    accumulating between cuts. Retained for callers/tests that promote in place.
+
+    The trailing block (legacy mode) sits *after* the dated sections on purpose:
     :func:`parse_unreleased` reads from ``## Unreleased`` to the next ``##`` header
     or EOF, so a foot-position block contains only its own categories and never
-    bleeds into the dated sections above it. Use :func:`reset_unreleased` for the
-    companion unstable-branch PR, which empties the block in place without cutting
-    a dated section.
+    bleeds into the dated sections above it.
     """
     major, minor, _ = parse_version(version)
     notes = parse_unreleased(text)
-    dated = render_version_section(
-        version, stage, urgency, date, notes, contributors, security_fixes
-    )
+    dated = render_version_section(version, stage, urgency, date, notes, security_fixes)
 
-    before_unreleased = text.split("\n" + UNRELEASED_HEADER, 1)[0]
+    # Prior dated sections come from the destination changelog in drain mode, or
+    # from the source file itself in legacy mode. Restrict to the region *before*
+    # the ## Unreleased header first: a ``### Contributors`` header inside the
+    # source's Unreleased block is a hand-added (reserved) section, not the running
+    # footer, and must not be folded into the roll-up. Splitting on the header is a
+    # no-op when it is absent (a frozen pre-release file), returning the whole text.
+    prior_source = prior_text if prior_text is not None else text
+    before_unreleased_raw = prior_source.split("\n" + UNRELEASED_HEADER, 1)[0]
+    # Peel off any existing ``### Contributors`` footer so (a) it is not swept into
+    # the dated region below, and (b) its names roll into the new cumulative footer
+    # -- this is what dedups the roll-up across rc1..rcN..GA.
+    before_unreleased, prior_contributors = _split_contributors_footer(before_unreleased_raw)
     existing = _existing_dated_sections(before_unreleased)
 
     parts: List[str] = [render_header(major, minor), "", dated.rstrip()]
     if existing:
         parts += ["", existing]
-    parts += ["", render_empty_unreleased().rstrip()]
+
+    # One cumulative ``### Contributors`` footer for the whole file: this cut's
+    # contributors (commit authors over the release range, so everyone whose code
+    # shipped is credited even without a release-note bullet) merged with those
+    # carried on the prior changelog, deduped and alpha-sorted.
+    merged = list(prior_contributors) + list(contributors or [])
+    footer = render_contributors_footer(merged)
+    if footer:
+        parts += ["", footer]
+
+    # Legacy mode re-emits an emptied ## Unreleased block so the single file keeps
+    # accumulating; drain mode leaves the destination frozen (the source branch
+    # holds the block). The block goes *last*: it is level-2, so a preceding
+    # level-3 ``### Contributors`` footer reads as a dated-section trailer, while a
+    # footer placed *after* the block would be parsed as a category inside it.
+    if prior_text is None:
+        parts += ["", render_empty_unreleased().rstrip()]
+
     return "\n".join(parts).rstrip() + "\n"

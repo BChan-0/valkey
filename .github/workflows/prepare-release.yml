@@ -48,13 +48,11 @@ on:
         required: false
         type: string
         default: ""
-      unstable_branch:
-        description: "Branch whose ## Unreleased block to reset in a companion PR (empty to skip)"
+      base_branch_to_empty:
+        description: "Branch whose ## Unreleased block to empty after draining (default: the branch this workflow is dispatched from)"
         required: false
         type: string
-        # FORK TEST: target the feature branch instead of unstable. Restore
-        # "unstable" before moving to valkey-io/valkey.
-        default: "feature/release-notes-automation"
+        default: ""
 
 permissions:
   contents: read
@@ -171,33 +169,55 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Resolved: stage=${STAGE_LC} target=${TARGET} base=${BASE_REF} continue=${CONTINUE} rename_from=${RENAME_FROM:-<none>}"
 
-      - name: Check out the release branch base
+      - name: Materialize the release branch destination
+        id: dest
         env:
           TARGET: ${{ steps.branch.outputs.target }}
           BASE_REF: ${{ steps.branch.outputs.base_ref }}
+          CONTINUE: ${{ steps.branch.outputs.continue }}
         run: |
           set -euo pipefail
-          # Work on TARGET starting from BASE_REF. For a continued branch this puts
-          # the running ## Unreleased block (with backports accumulated since the
-          # last cut) into the working tree so promote() reads it. The release
-          # tooling under utils/releasetools/ stays available because BASE_REF is a
-          # release branch forked from a ref that already carries it.
+          # The notes SOURCE is this checkout (the dispatch/base branch), whose
+          # ## Unreleased block carries the bullets for this cut. The DESTINATION is
+          # the running release branch ${TARGET}; we materialize it in a separate
+          # worktree so the current checkout (with the release tooling) stays as cwd.
+          # promote() drains the source block onto the destination's frozen changelog
+          # via --prior-notes-file, then we empty the source block in place.
           git fetch origin "${BASE_REF}"
-          git checkout -B "${TARGET}" "origin/${BASE_REF}"
+          WT="$(mktemp -d)/dest"
+          git worktree add -B "${TARGET}" "${WT}" "origin/${BASE_REF}"
 
-      - name: Promote notes and bump version
+          # First cut of a line (continue=false) starts the destination changelog
+          # from scratch: there is no prior dated section to prepend, so the
+          # destination file is just the source's notes content. Seed it so the
+          # promote step always has a prior file to read; promote() prepends the new
+          # dated section and writes the destination frozen (no ## Unreleased block).
+          if [ "${CONTINUE}" != "true" ]; then
+            : > "${WT}/00-RELEASENOTES"
+          fi
+          echo "wt=${WT}" >> "$GITHUB_OUTPUT"
+
+      - name: Promote notes (drain base -> release branch) and bump version
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           VERSION: ${{ inputs.version }}
           STAGE: ${{ inputs.release_stage }}
+          WT: ${{ steps.dest.outputs.wt }}
         run: |
           set -euo pipefail
+          # --repo-dir is the SOURCE checkout (this dir); --notes-file is the source
+          # block. --prior-notes-file and --version-file point at the DESTINATION
+          # worktree (absolute paths, so --repo-dir does not apply to them). The
+          # destination 00-RELEASENOTES is rewritten frozen; version.h is bumped there.
           args=(
             utils/releasetools/prepare_release.py
             --version "${VERSION}"
             --stage "${STAGE}"
             --urgency "${{ inputs.urgency }}"
             --repo "${{ github.repository }}"
+            --notes-file 00-RELEASENOTES
+            --prior-notes-file "${WT}/00-RELEASENOTES"
+            --version-file "${WT}/src/version.h"
           )
           if [[ -n "${{ inputs.date }}" ]]; then
             args+=(--date "${{ inputs.date }}")
@@ -207,7 +227,7 @@ jobs:
           fi
           python3 "${args[@]}"
 
-      - name: Commit, push, and open/update the release PR
+      - name: Commit and push the release branch
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           VERSION: ${{ inputs.version }}
@@ -215,12 +235,20 @@ jobs:
           TARGET: ${{ steps.branch.outputs.target }}
           STAGE_LC: ${{ steps.branch.outputs.stage_lc }}
           RENAME_FROM: ${{ steps.branch.outputs.rename_from }}
+          WT: ${{ steps.dest.outputs.wt }}
         run: |
           set -euo pipefail
 
-          # Stage-qualified version and PR/commit title, matching existing
-          # release PRs. The VERSION input is only MAJOR.MINOR.PATCH, so the
-          # stage suffix and the title form are derived here:
+          # ${TARGET} (pre-release-M.m.p, or M.m at GA) is a standalone long-running
+          # release branch: tags/releases are cut from it directly. We only push it
+          # here -- NO pull request is opened. Opening a PR into the dispatch/base
+          # branch would wrongly propose merging the release line back into it; the
+          # release line never merges back. The base branch's ## Unreleased block is
+          # emptied by the separate companion PR below.
+
+          # Stage-qualified version and commit title, matching existing release
+          # commits. The VERSION input is only MAJOR.MINOR.PATCH, so the stage
+          # suffix and the title form are derived here:
           #   rc stages -> "Update version to 9.1.0-rc2 and add release notes"
           #                (cf. #3521 rc2, #3333 rc1)
           #   ga        -> "Add release notes entry for Valkey 9.1.0 GA"
@@ -234,106 +262,75 @@ jobs:
             TITLE="Update version to ${RELEASE_NAME} and add release notes"
           fi
 
-          # Identity for the signed-off commit (Valkeyrie bot).
-          git config user.name "valkey-ci-bot"
-          git config user.email "valkey-ci-bot@users.noreply.github.com"
+          # Identity for the signed-off commit. Matches provenance-refresh.yml,
+          # the repo's other workflow that commits to GitHub: the standard
+          # github-actions[bot], which is also the actor the push authenticates as.
+          git -C "${WT}" config user.name "github-actions[bot]"
+          git -C "${WT}" config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add 00-RELEASENOTES src/version.h
-          if git diff --cached --quiet; then
+          git -C "${WT}" add 00-RELEASENOTES src/version.h
+          if git -C "${WT}" diff --cached --quiet; then
             echo "No changes to commit; nothing to prepare." >> "$GITHUB_STEP_SUMMARY"
+            git worktree remove --force "${WT}"
             exit 0
           fi
-          git commit -s -m "${TITLE}"
+          git -C "${WT}" commit -s -m "${TITLE}"
 
           # Push the running release branch. It is owned solely by this workflow,
           # so a force push is safe and lets a re-dispatch cleanly replace the tip.
-          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+          git -C "${WT}" push --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             "HEAD:${TARGET}"
 
           # GA rename: the rc line's history now lives on ${TARGET} (= M.m); delete
           # the old pre-release-M.m.p branch so only one running branch survives.
-          # Deleting it closes any PR still open from that branch -- by policy the
-          # prior rcN PRs are merged before a new stage is cut, so nothing live is
-          # lost. Best-effort: a missing branch is not an error.
+          # Best-effort: a missing branch is not an error.
           if [ -n "${RENAME_FROM}" ]; then
             git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
               --delete "${RENAME_FROM}" || echo "Note: could not delete ${RENAME_FROM} (already gone?)."
             echo "Renamed \`${RENAME_FROM}\` -> \`${TARGET}\` (deleted the old branch)." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          BODY=$(cat <<EOF
-          Automated release preparation for **${RELEASE_NAME}** (\`${STAGE}\`).
-
-          - Promoted the \`## Unreleased\` block of \`00-RELEASENOTES\` into a dated section
-          - Generated the contributor list for this release
-          - Re-emptied the \`## Unreleased\` block so the next stage's backports can accumulate
-          - Set the version macros in \`src/version.h\`
-
-          This is the running release branch \`${TARGET}\` for the ${VERSION%.*} line;
-          each rc/GA cut adds onto it. Please review the notes, urgency, and any
-          Security Fixes before merging.
-
-          A companion PR resets the \`## Unreleased\` block on \`${{ inputs.unstable_branch }}\`.
-          EOF
-          )
-
-          # Open a PR for this branch, or update the open one. By policy a prior
-          # rcN PR is merged before the next stage is cut, so gh pr create
-          # normally opens a fresh PR; if one is still open for ${TARGET} it is
-          # updated in place instead.
-          gh pr create \
-            --base "${GITHUB_REF_NAME}" \
-            --head "${TARGET}" \
-            --title "${TITLE}" \
-            --body "${BODY}" \
-            || gh pr edit "${TARGET}" --title "${TITLE}" --body "${BODY}"
+          git worktree remove --force "${WT}"
 
           echo "## Prepared release ${VERSION} (${STAGE})" >> "$GITHUB_STEP_SUMMARY"
-          echo "Pushed \`${TARGET}\` and opened/updated its PR into \`${GITHUB_REF_NAME}\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "Pushed the running release branch \`${TARGET}\` (no PR; cut tags/releases from it directly)." >> "$GITHUB_STEP_SUMMARY"
 
-      # Companion PR: clear the just-released bullets from the unstable branch's
-      # running ## Unreleased block. The release PR re-empties the block on the
-      # release branch itself (for that line's later-stage backports); this
-      # separate PR empties unstable's block so the bullets that just shipped are
-      # not promoted again when the next minor line forks. Typically set
-      # unstable_branch only for the rc1 cut (the fork point) and leave it empty
-      # for rc2/rc3/GA, whose notes come from backports, not from unstable. We cut
-      # a fresh checkout of the unstable branch so this never carries the dated
-      # section or the version bump from the release PR above.
-      - name: Reset Unreleased on unstable and open companion PR
-        if: ${{ inputs.unstable_branch != '' }}
+      # Companion PR: empty the base branch's ## Unreleased block. This cut drained
+      # those bullets onto the running release branch, so they must be cleared from
+      # the base or the next cut would drain (and promote) them again. The base
+      # branch is the dispatch ref (GITHUB_REF_NAME) by default -- the branch this
+      # workflow runs from, where contributors accumulate notes -- or an explicit
+      # override via the base_branch_to_empty input. We materialize it in a worktree
+      # so the current checkout (with the release tooling) stays as cwd, and edit its
+      # file via --repo-dir (reset-only mode does no git ops, only reads/writes the
+      # notes file under that dir).
+      - name: Empty the base branch's Unreleased block and open companion PR
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           VERSION: ${{ inputs.version }}
           STAGE: ${{ inputs.release_stage }}
-          UNSTABLE: ${{ inputs.unstable_branch }}
+          BASE_BRANCH: ${{ inputs.base_branch_to_empty != '' && inputs.base_branch_to_empty || github.ref_name }}
           TARGET: ${{ steps.branch.outputs.target }}
         run: |
           set -euo pipefail
-          # Skip cleanly if the release step found nothing to commit (no local
-          # checkout of the running release branch).
-          if ! git rev-parse --verify "${TARGET}" >/dev/null 2>&1; then
-            echo "No release branch ${TARGET}; skipping unstable reset." >> "$GITHUB_STEP_SUMMARY"
+          # Skip cleanly if the release step found nothing to push (no release branch
+          # on the remote means nothing was drained, so nothing to clear).
+          if ! git ls-remote --exit-code --heads origin "refs/heads/${TARGET}" >/dev/null 2>&1; then
+            echo "No release branch ${TARGET} on remote; skipping base reset." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
           RESET_BRANCH="release-prep/reset-unreleased-${VERSION}-${STAGE}"
-          TITLE="Reset Unreleased after ${VERSION} ${STAGE} release"
+          TITLE="Empty Unreleased on ${BASE_BRANCH} after ${VERSION} ${STAGE}"
 
-          git config user.name "valkey-ci-bot"
-          git config user.email "valkey-ci-bot@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Materialize the unstable branch in a separate worktree, leaving the
-          # current checkout (the dispatch ref, which carries the release tooling)
-          # as our working directory. Switching the main tree to unstable would
-          # remove utils/releasetools/ on any unstable that predates this feature,
-          # so we instead run the tooling from here and edit the worktree's file
-          # via --repo-dir (reset-only mode does no git ops, only reads/writes the
-          # notes file under that dir).
-          git fetch origin "${UNSTABLE}"
-          WT="$(mktemp -d)/unstable"
-          git worktree add -b "${RESET_BRANCH}" "${WT}" "origin/${UNSTABLE}"
+          git fetch origin "${BASE_BRANCH}"
+          WT="$(mktemp -d)/base"
+          git worktree add -b "${RESET_BRANCH}" "${WT}" "origin/${BASE_BRANCH}"
 
           python3 utils/releasetools/prepare_release.py \
             --version "${VERSION}" \
@@ -345,7 +342,7 @@ jobs:
 
           git -C "${WT}" add 00-RELEASENOTES
           if git -C "${WT}" diff --cached --quiet; then
-            echo "## Unreleased on ${UNSTABLE} already empty; no companion PR." >> "$GITHUB_STEP_SUMMARY"
+            echo "## Unreleased on ${BASE_BRANCH} already empty; no companion PR." >> "$GITHUB_STEP_SUMMARY"
             git worktree remove --force "${WT}"
             exit 0
           fi
@@ -356,20 +353,34 @@ jobs:
             "HEAD:${RESET_BRANCH}"
 
           BODY=$(cat <<EOF
-          Clears the \`## Unreleased\` block of \`00-RELEASENOTES\` now that
-          **${VERSION}** (\`${STAGE}\`) has been cut. The released bullets live in the
-          dated section on the release branch; this keeps an emptied block on
-          \`${UNSTABLE}\` for future PRs to append to.
+          Empties the \`## Unreleased\` block of \`00-RELEASENOTES\` on \`${BASE_BRANCH}\`
+          now that **${VERSION}** (\`${STAGE}\`) has been cut. Those bullets were drained
+          into the dated section on the running release branch, so clearing them here
+          keeps the base branch ready for the next cut's notes and prevents them being
+          promoted twice.
 
           Generated by the \`prepare-release\` workflow as the companion to the release PR.
           EOF
           )
 
+          # MANUAL CLEANUP: this workflow does not delete ${RESET_BRANCH} after the
+          # companion PR merges (the repo's "Automatically delete head branches"
+          # setting is off, and we don't force it here). Whoever triggers this
+          # workflow is responsible for deleting the branch once the companion PR
+          # is merged, e.g. `git push origin --delete ${RESET_BRANCH}` or the
+          # "Delete branch" button on the merged PR. The release branch (${TARGET})
+          # is long-lived and must NOT be deleted.
           gh pr create \
-            --base "${UNSTABLE}" \
+            --base "${BASE_BRANCH}" \
             --head "${RESET_BRANCH}" \
             --title "${TITLE}" \
             --body "${BODY}" \
             || gh pr edit "${RESET_BRANCH}" --title "${TITLE}" --body "${BODY}"
 
-          echo "Opened companion PR from \`${RESET_BRANCH}\` into \`${UNSTABLE}\`." >> "$GITHUB_STEP_SUMMARY"
+          git worktree remove --force "${WT}"
+
+          {
+            echo "Opened companion PR from \`${RESET_BRANCH}\` into \`${BASE_BRANCH}\`."
+            echo "**Action required:** after merging the companion PR, delete the"
+            echo "leftover branch \`${RESET_BRANCH}\` (it is not removed automatically)."
+          } >> "$GITHUB_STEP_SUMMARY"

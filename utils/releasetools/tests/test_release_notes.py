@@ -68,7 +68,6 @@ def test_render_version_section_ga_structure():
     notes = rn.parse_unreleased(SAMPLE)
     section = rn.render_version_section(
         "9.1.0", "ga", "high", "2026-06-11", notes,
-        contributors=["Alice A @alice", "Bob B @bob"],
     )
     assert "Valkey 9.1.0 GA  -  Released Thu 11 June 2026" in section
     assert "Upgrade urgency HIGH: This is the first stable release of Valkey 9.1." in section
@@ -76,9 +75,9 @@ def test_render_version_section_ga_structure():
     assert "### Bug Fixes" in section
     # Empty category dropped.
     assert "### New Features and Enhanced Behavior" not in section
-    # Contributors rendered as bullets.
-    assert "### Contributors" in section
-    assert "* Alice A @alice" in section
+    # Contributors are no longer rendered per dated section -- they live in a
+    # single cumulative footer assembled by promote() (see the footer tests).
+    assert "### Contributors" not in section
 
 
 def test_render_version_section_rc_wording():
@@ -118,19 +117,16 @@ def test_render_security_fixes_arg_wins_over_notes_no_duplicate_header():
     assert "(CVE-2026-2) hand-added in the block" not in section
 
 
-def test_render_contributors_arg_wins_over_notes_no_duplicate_header():
-    # Same for a hand-added Contributors section: the generated list is the source
-    # of truth, the hand-added section is dropped, and there is one header.
+def test_render_drops_hand_added_contributors_section():
+    # A hand-added Contributors section in the notes is reserved, so it is never
+    # rendered into a dated section (the real list is the cumulative footer that
+    # promote() assembles from commit authors).
     notes = {
         "Bug Fixes": ["* a fix (#1)"],
         rn.CONTRIBUTORS_SECTION: ["* I Added Myself @sneaky"],
     }
-    section = rn.render_version_section(
-        "9.1.0", "ga", "LOW", "2026-06-11", notes,
-        contributors=["Real Generated @gen"],
-    )
-    assert section.count("### Contributors") == 1
-    assert "Real Generated @gen" in section
+    section = rn.render_version_section("9.1.0", "ga", "LOW", "2026-06-11", notes)
+    assert "### Contributors" not in section
     assert "I Added Myself @sneaky" not in section
 
 
@@ -319,3 +315,116 @@ def test_promote_chains_rc_to_ga():
     # The block is re-emptied for the next stage and the backport is no longer in it.
     assert rn.is_unreleased_empty(rn.parse_unreleased(rc2))
     assert "Backported fix by @bob (#200)" not in rc2.split("## Unreleased", 1)[1]
+
+
+def test_promote_drain_mode_freezes_destination_without_block():
+    # Two-source (drain) mode: bullets come from the source branch's block, prior
+    # dated sections come from the destination changelog, and the result is frozen
+    # (no ## Unreleased block -- the source branch holds the running block).
+    source = (
+        "Preamble.\n\n## Unreleased\n\n"
+        "### Bug Fixes\n* Backport C by @carol (#30)\n"
+    )
+    destination = (
+        "Valkey 9.1 release notes\n========================\n\n"
+        + rn.URGENCY_LEGEND
+        + "\n\nValkey 9.1.0-rc1  -  Released Mon 01 June 2026\n"
+        "---------------------------------------------\n\n"
+        "Upgrade urgency LOW: This is the first release candidate of Valkey 9.1.0.\n\n"
+        "### New Features and Enhanced Behavior\n* rc1 feature by @alice (#10)\n"
+    )
+    out = rn.promote(
+        source, version="9.1.0", stage="rc2", urgency="LOW", date="2026-04-28",
+        prior_text=destination,
+    )
+    # New rc2 section (from source bullets) prepended above the retained rc1 section.
+    assert "Backport C by @carol (#30)" in out
+    assert out.count("rc1 feature by @alice (#10)") == 1
+    assert out.index("Valkey 9.1.0-rc2") < out.index("Valkey 9.1.0-rc1")
+    # Frozen: the destination carries no running block, and the source's preamble
+    # text is not dragged in.
+    assert "## Unreleased" not in out
+    assert "Preamble." not in out
+
+
+def test_promote_drain_mode_first_cut_empty_destination():
+    # First cut of a line: destination is empty (seeded), so the result is just the
+    # header + the new dated section, still frozen.
+    source = "p\n\n## Unreleased\n\n### Bug Fixes\n* first by @a (#1)\n"
+    out = rn.promote(
+        source, version="9.1.0", stage="rc1", urgency="LOW", date="2026-03-17",
+        prior_text="",
+    )
+    assert "Valkey 9.1.0-rc1" in out
+    assert "first by @a (#1)" in out
+    assert "## Unreleased" not in out
+
+
+def test_render_contributors_footer_dedups_and_sorts():
+    footer = rn.render_contributors_footer(
+        ["Zoe Z @zoe", "Alice A @alice", "* Bob B @bob", "alice a @alice"]
+    )
+    lines = footer.splitlines()
+    assert lines[0] == "### Contributors"
+    # Case-insensitive dedup (first spelling wins), alpha-sorted by display name.
+    assert lines[1:] == ["* Alice A @alice", "* Bob B @bob", "* Zoe Z @zoe"]
+
+
+def test_render_contributors_footer_empty():
+    assert rn.render_contributors_footer([]) == ""
+
+
+def test_promote_contributors_footer_is_cumulative_and_deduped():
+    # Drain rc1 then rc2; the footer at the very end of the file rolls up both
+    # cuts' contributors, deduped and sorted -- including a contributor who shipped
+    # code but added no release-note bullet (Zoe in rc1).
+    src1 = "p\n\n## Unreleased\n\n### Bug Fixes\n* fix A by @alice (#1)\n"
+    rc1 = rn.promote(
+        src1, version="9.1.0", stage="rc1", urgency="LOW", date="2026-03-17",
+        contributors=["Alice A @alice", "Zoe Z @zoe"], prior_text="",
+    )
+    src2 = "p\n\n## Unreleased\n\n### Bug Fixes\n* fix B by @bob (#2)\n"
+    rc2 = rn.promote(
+        src2, version="9.1.0", stage="rc2", urgency="LOW", date="2026-04-28",
+        contributors=["Bob B @bob", "Alice A @alice"], prior_text=rc1,
+    )
+    # Exactly one footer, at the very end of the file.
+    assert rc2.count("### Contributors") == 1
+    footer = rc2[rc2.index("### Contributors"):]
+    assert footer.strip().splitlines() == [
+        "### Contributors",
+        "* Alice A @alice",  # deduped across rc1 + rc2
+        "* Bob B @bob",
+        "* Zoe Z @zoe",      # credited from rc1 despite writing no note bullet
+    ]
+    # The footer trails the last dated section.
+    assert rc2.rindex("### Contributors") > rc2.index("Valkey 9.1.0-rc1")
+
+
+def test_promote_legacy_footer_precedes_unreleased_block_and_block_stays_empty():
+    # In legacy mode the footer sits before the re-emitted ## Unreleased block, so
+    # the block still parses empty (the level-3 footer is not read as a category
+    # inside the level-2 block).
+    src = "p\n\n## Unreleased\n\n### Bug Fixes\n* fix A by @alice (#1)\n"
+    out = rn.promote(
+        src, version="9.1.0", stage="rc1", urgency="LOW", date="2026-03-17",
+        contributors=["Alice A @alice"],
+    )
+    assert "## Unreleased" in out
+    assert out.index("### Contributors") < out.index("## Unreleased")
+    assert rn.is_unreleased_empty(rn.parse_unreleased(out))
+
+
+def test_promote_ignores_hand_added_contributors_in_source_block():
+    # A hand-added ### Contributors inside the source's Unreleased block is reserved
+    # and must not leak into the cumulative footer; only generated contributors do.
+    src = (
+        "p\n\n## Unreleased\n\n### Bug Fixes\n* a fix (#1)\n\n"
+        "### Contributors\n* Sneaky Self @sneaky\n"
+    )
+    out = rn.promote(
+        src, version="9.1.0", stage="rc1", urgency="LOW", date="2026-03-17",
+        contributors=["Real Gen @gen"], prior_text="",
+    )
+    assert "@sneaky" not in out
+    assert "* Real Gen @gen" in out
