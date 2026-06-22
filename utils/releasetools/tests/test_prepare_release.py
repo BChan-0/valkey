@@ -249,3 +249,71 @@ def test_drain_mode_writes_frozen_destination_and_bumps_its_version(tmp_path, mo
     # Source notes file untouched by promotion.
     assert "Backport C by @carol (#30)" in src.read_text()
     assert "## Unreleased" in src.read_text()
+
+
+NOTES_BAD_BULLETS = """preamble
+
+## Unreleased
+
+### Behavior Changes
+* malformed ref by @BChan-0 (#idk)
+
+### Bug Fixes
+* good one by @alice (#42)
+* missing ref entirely by @bob
+* no attribution at all (#43)
+"""
+
+
+def test_bad_bullets_warn_but_still_promote(tmp_path, monkeypatch, capsys):
+    # Bullets with a missing/malformed (#N) or a missing `by @handle` are promoted
+    # as-is, but a non-blocking warning flags them (a second line of defence past
+    # the PR-time checks). The fully valid (#42) bullet is not flagged.
+    _setup(tmp_path, NOTES_BAD_BULLETS)
+    monkeypatch.setattr(pr, "list_contributors", lambda *a, **k: [])
+    rc = _run(tmp_path)
+    captured = capsys.readouterr()
+    assert rc == 0  # non-blocking
+    # Annotation on stdout, per-bullet detail on stderr.
+    assert "::warning::" in captured.out
+    assert "missing/malformed PR reference or attribution" in captured.out
+    # Malformed PR ref flagged with that reason.
+    assert "(#idk)" in captured.err and "missing/malformed PR ref" in captured.err
+    # Missing attribution flagged with that reason.
+    assert "no attribution at all (#43)  -- missing `by @handle` attribution" in captured.err
+    # The fully valid bullet must not be flagged.
+    assert "good one by @alice (#42)" not in captured.err
+    # Still promoted (drained into the dated section).
+    promoted = captured.out.split("## Unreleased", 1)[0]
+    assert "malformed ref by @BChan-0 (#idk)" in promoted
+
+
+def test_bad_bullet_reports_both_reasons_for_one_bullet(tmp_path, monkeypatch, capsys):
+    # A bullet missing BOTH a PR ref and an attribution is reported once with both.
+    _setup(tmp_path, "p\n\n## Unreleased\n\n### Bug Fixes\n* totally bare bullet\n")
+    monkeypatch.setattr(pr, "list_contributors", lambda *a, **k: [])
+    _run(tmp_path)
+    err = capsys.readouterr().err
+    assert "totally bare bullet" in err
+    assert "missing/malformed PR ref" in err and "missing `by @handle` attribution" in err
+
+
+def test_bad_bullet_warning_in_job_summary(tmp_path, monkeypatch):
+    _setup(tmp_path, NOTES_BAD_BULLETS)
+    monkeypatch.setattr(pr, "list_contributors", lambda *a, **k: [])
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    rc = _run(tmp_path)
+    assert rc == 0
+    text = summary.read_text()
+    assert "missing or malformed PR reference" in text
+    assert "(#idk)" in text
+
+
+def test_clean_bullets_emit_no_warning(tmp_path, monkeypatch, capsys):
+    _setup(tmp_path, NOTES_CLEAN)  # bullet is "* Fixed a real crash by @alice (#10)"
+    monkeypatch.setattr(pr, "list_contributors", lambda *a, **k: [])
+    _run(tmp_path)
+    captured = capsys.readouterr()
+    assert "missing/malformed PR reference or attribution" not in captured.out
+    assert "missing/malformed PR ref" not in captured.err
