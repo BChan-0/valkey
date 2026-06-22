@@ -374,28 +374,33 @@ def promote(
     date: str,
     contributors: Optional[Sequence[str]] = None,
     security_fixes: Optional[Sequence[str]] = None,
+    prior_text: Optional[str] = None,
 ) -> str:
-    """Promote the ``## Unreleased`` block into a new dated release section.
+    """Promote a ``## Unreleased`` block into a new dated release section.
 
-    Returns the full rewritten release-branch changelog: a regenerated title +
-    urgency legend, the new dated section first, then any previously dated
-    sections, and finally an **emptied** ``## Unreleased`` block at the foot.
+    The bullets to promote always come from the ``## Unreleased`` block of *text*.
+    Two output shapes, selected by *prior_text*:
 
-    Keeping (rather than dropping) an emptied block is what makes the
-    rc1 -> rc2 -> ... -> GA chain work. rc1 is cut from unstable, whose block
-    carries the bullets to promote; later stages are cut from the release branch,
-    where backported PRs accumulate their notes under this emptied block between
-    cuts. Each promote() reads that block into the new dated section and re-empties
-    it for the next stage. (Without it, every stage after rc1 would render an empty
-    section, since the release branch would have no block to read -- see
-    test_promote_chains_rc_to_ga.)
+    **Two-source (drain) mode -- when *prior_text* is given.** *text* is the
+    *source* branch's file (the base/feature branch, whose block accumulates the
+    bullets) and *prior_text* is the *destination* branch's existing changelog
+    (the pre-release branch, which carries earlier dated sections). The result is
+    the destination's frozen changelog: title + legend, the new dated section,
+    then *prior_text*'s previously dated sections -- and **no** ``## Unreleased``
+    block, because the destination does not accumulate notes; the source branch
+    does (and is emptied separately with :func:`reset_unreleased`). This is the
+    rc1 -> rcN -> GA flow: every cut drains the base branch's block onto the
+    running pre-release branch.
 
-    The block is placed *after* the dated sections (at the foot) on purpose:
+    **Single-source (legacy) mode -- when *prior_text* is None.** *text* supplies
+    both the bullets and the prior dated sections, and the result re-emits an
+    **emptied** ``## Unreleased`` block at the foot so a single file can keep
+    accumulating between cuts. Retained for callers/tests that promote in place.
+
+    The trailing block (legacy mode) sits *after* the dated sections on purpose:
     :func:`parse_unreleased` reads from ``## Unreleased`` to the next ``##`` header
     or EOF, so a foot-position block contains only its own categories and never
-    bleeds into the dated sections above it. Use :func:`reset_unreleased` for the
-    companion unstable-branch PR, which empties the block in place without cutting
-    a dated section.
+    bleeds into the dated sections above it.
     """
     major, minor, _ = parse_version(version)
     notes = parse_unreleased(text)
@@ -403,11 +408,19 @@ def promote(
         version, stage, urgency, date, notes, contributors, security_fixes
     )
 
-    before_unreleased = text.split("\n" + UNRELEASED_HEADER, 1)[0]
+    # Prior dated sections come from the destination changelog in drain mode, or
+    # from the source file itself in legacy mode. Splitting on the Unreleased
+    # header is a no-op when the header is absent (a frozen pre-release file),
+    # returning the whole text, so _existing_dated_sections sees only dated text.
+    prior_source = prior_text if prior_text is not None else text
+    before_unreleased = prior_source.split("\n" + UNRELEASED_HEADER, 1)[0]
     existing = _existing_dated_sections(before_unreleased)
 
     parts: List[str] = [render_header(major, minor), "", dated.rstrip()]
     if existing:
         parts += ["", existing]
-    parts += ["", render_empty_unreleased().rstrip()]
+    # Legacy mode re-emits an emptied block so the single file keeps accumulating;
+    # drain mode leaves the destination frozen (the source branch holds the block).
+    if prior_text is None:
+        parts += ["", render_empty_unreleased().rstrip()]
     return "\n".join(parts).rstrip() + "\n"

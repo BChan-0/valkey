@@ -161,6 +161,7 @@ def run(
     security_fixes: Optional[List[str]],
     dry_run: bool,
     reset_unreleased_only: bool = False,
+    prior_notes_file: Optional[str] = None,
 ) -> int:
     # Unstable path: don't cut a dated section or bump the version, just empty the
     # ## Unreleased block so the bullets that were just promoted onto the release
@@ -195,6 +196,19 @@ def run(
     # Non-blocking: flag any notes under typo'd/invented categories. They are
     # still promoted verbatim below, so the release is never blocked on them.
     _warn_unrecognized(notes_text, notes_file)
+
+    # Drain mode: bullets come from the source file (notes_file, the base/feature
+    # branch's block) while prior dated sections come from the destination changelog
+    # (prior_notes_file, the running pre-release branch). The promoted changelog is
+    # frozen -- no ## Unreleased block -- and written to the destination path. The
+    # base branch's block is emptied separately via --reset-unreleased-only. Without
+    # prior_notes_file this stays single-file (legacy) promotion.
+    prior_text: Optional[str] = None
+    out_notes_file = notes_file
+    if prior_notes_file:
+        prior_text = _read(os.path.join(repo_dir, prior_notes_file))
+        out_notes_file = prior_notes_file
+
     new_notes = promote(
         notes_text,
         version=version,
@@ -203,6 +217,7 @@ def run(
         date=date,
         contributors=contributors,
         security_fixes=security_fixes,
+        prior_text=prior_text,
     )
 
     version_text = _read(os.path.join(repo_dir, version_file))
@@ -215,15 +230,15 @@ def run(
     )
 
     if dry_run:
-        print("\n===== {} (dry run) =====\n".format(notes_file))
+        print("\n===== {} (dry run) =====\n".format(out_notes_file))
         print(new_notes)
         print("\n===== {} (dry run) =====\n".format(version_file))
         print(new_version)
         return 0
 
-    _write(os.path.join(repo_dir, notes_file), new_notes)
+    _write(os.path.join(repo_dir, out_notes_file), new_notes)
     _write(os.path.join(repo_dir, version_file), new_version)
-    print("Wrote {} and {}.".format(notes_file, version_file))
+    print("Wrote {} and {}.".format(out_notes_file, version_file))
     return 0
 
 
@@ -250,6 +265,14 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--repo-dir", default=".", help="Repository checkout dir (default: .)")
     parser.add_argument("--notes-file", default="00-RELEASENOTES")
+    parser.add_argument(
+        "--prior-notes-file",
+        default=None,
+        help="Destination changelog to prepend the new dated section to (the running "
+        "pre-release branch's 00-RELEASENOTES). When set, bullets are drained from "
+        "--notes-file (the base branch) into this file, written frozen (no ## Unreleased "
+        "block). Omit for in-place single-file promotion.",
+    )
     parser.add_argument("--version-file", default="src/version.h")
     parser.add_argument(
         "--security-fix",
@@ -285,6 +308,7 @@ def main(argv=None) -> int:
             security_fixes=args.security_fixes,
             dry_run=args.dry_run,
             reset_unreleased_only=args.reset_unreleased_only,
+            prior_notes_file=args.prior_notes_file,
         )
     except ValueError as exc:
         print("error: {}".format(exc), file=sys.stderr)

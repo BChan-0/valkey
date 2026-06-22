@@ -319,3 +319,46 @@ def test_promote_chains_rc_to_ga():
     # The block is re-emptied for the next stage and the backport is no longer in it.
     assert rn.is_unreleased_empty(rn.parse_unreleased(rc2))
     assert "Backported fix by @bob (#200)" not in rc2.split("## Unreleased", 1)[1]
+
+
+def test_promote_drain_mode_freezes_destination_without_block():
+    # Two-source (drain) mode: bullets come from the source branch's block, prior
+    # dated sections come from the destination changelog, and the result is frozen
+    # (no ## Unreleased block -- the source branch holds the running block).
+    source = (
+        "Preamble.\n\n## Unreleased\n\n"
+        "### Bug Fixes\n* Backport C by @carol (#30)\n"
+    )
+    destination = (
+        "Valkey 9.1 release notes\n========================\n\n"
+        + rn.URGENCY_LEGEND
+        + "\n\nValkey 9.1.0-rc1  -  Released Mon 01 June 2026\n"
+        "---------------------------------------------\n\n"
+        "Upgrade urgency LOW: This is the first release candidate of Valkey 9.1.0.\n\n"
+        "### New Features and Enhanced Behavior\n* rc1 feature by @alice (#10)\n"
+    )
+    out = rn.promote(
+        source, version="9.1.0", stage="rc2", urgency="LOW", date="2026-04-28",
+        prior_text=destination,
+    )
+    # New rc2 section (from source bullets) prepended above the retained rc1 section.
+    assert "Backport C by @carol (#30)" in out
+    assert out.count("rc1 feature by @alice (#10)") == 1
+    assert out.index("Valkey 9.1.0-rc2") < out.index("Valkey 9.1.0-rc1")
+    # Frozen: the destination carries no running block, and the source's preamble
+    # text is not dragged in.
+    assert "## Unreleased" not in out
+    assert "Preamble." not in out
+
+
+def test_promote_drain_mode_first_cut_empty_destination():
+    # First cut of a line: destination is empty (seeded), so the result is just the
+    # header + the new dated section, still frozen.
+    source = "p\n\n## Unreleased\n\n### Bug Fixes\n* first by @a (#1)\n"
+    out = rn.promote(
+        source, version="9.1.0", stage="rc1", urgency="LOW", date="2026-03-17",
+        prior_text="",
+    )
+    assert "Valkey 9.1.0-rc1" in out
+    assert "first by @a (#1)" in out
+    assert "## Unreleased" not in out
