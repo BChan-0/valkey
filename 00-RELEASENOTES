@@ -36,10 +36,12 @@ dropped. The CI check warns if you do.
 -->
 
 ### Behavior Changes
+* test comment 1.1 by @BChan-0 (#40)
 
 ### New Features and Enhanced Behavior
 
 ### Performance and Efficiency Improvements
+* test comment 1.2 by @BChan-0 (#40)
 
 ### Bug Fixes
 
