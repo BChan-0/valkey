@@ -76,11 +76,15 @@ _PR_REF_RE = re.compile(r"\(#(\d+)\)")
 # group yields the handle so we can compare it against this PR's author.
 _AUTHOR_RE = re.compile(r"by @([\w-]+)")
 
-# Matches a "(#123)" reference only at the END of a bullet. The canonical bullet
-# form is "* <desc> by @handle (#N)", so the trailing reference is the bullet's
-# own PR number; a mid-text "(#N)" is a cross-reference to another PR and must
-# not be mistaken for a mislabel. Used to validate the number against this PR.
-_TRAILING_PR_REF_RE = re.compile(r"\(#(\d+)\)\s*$")
+# Matches a trailing "(#...)" *slot* at the END of a bullet -- the captured
+# content is anything but a closing paren, so a malformed placeholder like
+# "(#idk)" or an empty "(#)" matches too, not just a numeric "(#123)". The
+# canonical bullet form is "* <desc> by @handle (#N)", so this trailing slot is
+# the bullet's own PR-number position; a mid-text "(#N)" is a cross-reference to
+# another PR and is intentionally not matched. Recognizing a non-numeric slot as
+# the PR-number position is what lets us *replace* a wrong/placeholder number
+# (e.g. "(#PR)" -> "(#41)") instead of appending a second "(#41)" after it.
+_TRAILING_PR_REF_RE = re.compile(r"\(#([^)]*)\)\s*$")
 
 
 def parse_labels(raw: Optional[str]) -> List[str]:
@@ -159,22 +163,30 @@ def _require_pr_refs(new_bullets: List[str], pr_number: Optional[str]) -> List[s
     """Return failure lines for net-new bullets missing or misreferencing the PR number.
 
     Every net-new bullet must end with this PR's own ``(#N)``. A bullet with no
-    trailing reference is *missing* its number; one whose trailing reference is a
-    different number is *wrong* (e.g. a copy/pasted bullet still pointing at
-    another PR). Mid-text ``(#N)`` cross-references to other PRs are ignored.
+    trailing reference at all is *missing* its number, so the suggested fix
+    appends ``(#N)``. A bullet whose trailing ``(#...)`` slot holds something
+    other than this PR's number is *wrong* -- whether it is a different number
+    (e.g. a copy/pasted bullet still pointing at another PR) or a non-numeric
+    placeholder (e.g. ``(#PR)``); the suggested fix *replaces* that slot in
+    place rather than appending, so the bullet does not end up with two ``(#N)``
+    references. Mid-text ``(#N)`` cross-references to other PRs are ignored.
     Gated on *pr_number* being known -- it always is in CI; without it we cannot
     say which number to require, so the check is skipped (returns ``[]``).
     """
     if not pr_number:
         return []
     missing: List[str] = []
-    wrong: List[Tuple[str, str]] = []
+    wrong: List[Tuple[str, str, str]] = []
     for bullet in new_bullets:
         match = _TRAILING_PR_REF_RE.search(bullet)
         if match is None:
             missing.append(bullet.rstrip())
         elif match.group(1) != pr_number:
-            wrong.append((bullet.rstrip(), match.group(1)))
+            # Replace the existing trailing slot in place (don't append a second
+            # one): keep the text before the slot, then this PR's "(#N)".
+            text = bullet.rstrip()
+            corrected = "{}(#{})".format(text[: match.start()], pr_number)
+            wrong.append((text, match.group(1), corrected))
     lines: List[str] = []
     if missing:
         lines.append(
@@ -188,12 +200,13 @@ def _require_pr_refs(new_bullets: List[str], pr_number: Optional[str]) -> List[s
         if lines:
             lines.append("")
         lines.append(
-            "❌ {} new bullet(s) reference a PR number that is not this PR "
-            "(#{}). Fix the trailing `(#N)` to match this PR:".format(len(wrong), pr_number)
+            "❌ {} new bullet(s) have a trailing `(#N)` that is not this PR "
+            "(#{}). Replace it with this PR's number:".format(len(wrong), pr_number)
         )
         lines.append("")
-        for text, found in wrong:
-            lines.append("    {}  ← says (#{}), expected (#{})".format(text, found, pr_number))
+        for text, found, corrected in wrong:
+            lines.append("    {}  ← says (#{}), should be:".format(text, found))
+            lines.append("    {}".format(corrected))
     return lines
 
 

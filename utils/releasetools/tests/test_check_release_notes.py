@@ -301,7 +301,8 @@ NOTES_WRONG_AUTHOR = """preamble
 
 
 def test_wrong_pr_number_fails(tmp_path):
-    # New bullet's trailing (#9999) does not match this PR (#1) -> fail.
+    # New bullet's trailing (#9999) does not match this PR (#1) -> fail, and the
+    # fix replaces the slot in place rather than appending a second (#N).
     _write(tmp_path, NOTES_WRONG_PR)
     ok, messages = crn.evaluate(
         ["release-notes"], base_sha=None, repo_dir=str(tmp_path), pr_number="1"
@@ -309,7 +310,28 @@ def test_wrong_pr_number_fails(tmp_path):
     assert not ok
     joined = "\n".join(messages)
     assert "not this PR" in joined
-    assert "says (#9999), expected (#1)" in joined
+    assert "says (#9999)" in joined
+    # The corrected bullet carries this PR's number once, not "(#9999) (#1)".
+    assert "* Fixed a thing by @dev (#1)" in joined
+    assert "(#9999) (#1)" not in joined
+
+
+def test_placeholder_pr_number_replaced_not_appended(tmp_path):
+    # A non-numeric placeholder like "(#idk)" must be recognized as the trailing
+    # PR-number slot and *replaced*, not treated as missing (which would append a
+    # second reference, producing "(#idk) (#41)"). Regression for that bug.
+    notes = NOTES_WRONG_PR.replace(
+        "* Fixed a thing by @dev (#9999)", "* test comment by @BChan-0 (#idk)"
+    )
+    _write(tmp_path, notes)
+    ok, messages = crn.evaluate(
+        ["release-notes"], base_sha=None, repo_dir=str(tmp_path), pr_number="41"
+    )
+    assert not ok
+    joined = "\n".join(messages)
+    # Fix shows the slot replaced in place, never doubled.
+    assert "* test comment by @BChan-0 (#41)" in joined
+    assert "(#idk) (#41)" not in joined
 
 
 def test_correct_pr_number_passes(tmp_path):
