@@ -2330,6 +2330,7 @@ struct valkeyServer {
     int lazyfree_lazy_server_del;
     int lazyfree_lazy_user_del;
     int lazyfree_lazy_user_flush;
+    int lazyfree_lazy_defrag; /* Release defragmented allocations in a background thread. */
     /* Latency monitor */
     long long latency_monitor_threshold;
     dict *latency_events;
