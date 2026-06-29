@@ -11,6 +11,14 @@ Upgrade urgency levels:
 | CRITICAL | There is a critical bug affecting MOST USERS. Upgrade ASAP.         |
 | SECURITY | There are security fixes in the release.                            |
 
+Valkey 9.1.0 GA  -  Released Mon 29 June 2026
+---------------------------------------------
+
+Upgrade urgency LOW: This is the first stable release of Valkey 9.1.
+
+### Performance and Efficiency Improvements
+* Add the lazyfree-lazy-defrag option to free defragmented allocations in a background thread, reducing main-thread latency by @BChan-0 (#44)
+
 Valkey 9.1.0-rc1  -  Released Mon 29 June 2026
 ----------------------------------------------
 
