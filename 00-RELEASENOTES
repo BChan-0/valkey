@@ -11,6 +11,14 @@ Upgrade urgency levels:
 | CRITICAL | There is a critical bug affecting MOST USERS. Upgrade ASAP.         |
 | SECURITY | There are security fixes in the release.                            |
 
+Valkey 9.2.0 GA  -  Released Tue 07 July 2026
+---------------------------------------------
+
+Upgrade urgency LOW: This is the first stable release of Valkey 9.2.
+
+### Observability and Logging
+* Report the number of active connection listeners in the `INFO server` output by @BChan-0 (#56)
+
 Valkey 9.2.0-rc2  -  Released Tue 07 July 2026
 ----------------------------------------------
 
