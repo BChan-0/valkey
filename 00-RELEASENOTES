@@ -52,5 +52,6 @@ dropped. The CI check warns if you do.
 ### Module API Changes
 
 ### Observability and Logging
+* Report the number of active connection listeners in the `INFO server` section by @BChan-0 (#PR)
 
 ### Build and Tooling
