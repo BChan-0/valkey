@@ -1,16 +1,26 @@
-Hello! This file is just a placeholder, since this is the "unstable" branch
-of Valkey, the place where all the development happens.
+Valkey 50.1 release notes
+=========================
 
-There is no release notes for this branch, it gets forked into another branch
-every time there is a partial feature freeze in order to eventually create
-a new stable release.
+Upgrade urgency levels:
 
-Usually "unstable" is stable enough for you to use it in development environments
-however you should never use it in production environments. It is possible
-to download the latest stable release here:
+| Level    | Meaning                                                             |
+|----------|---------------------------------------------------------------------|
+| LOW      | No need to upgrade unless there are new features you want to use.   |
+| MODERATE | Program an upgrade of the server, but it's not urgent.              |
+| HIGH     | There is a critical bug that may affect a subset of users. Upgrade! |
+| CRITICAL | There is a critical bug affecting MOST USERS. Upgrade ASAP.         |
+| SECURITY | There are security fixes in the release.                            |
 
-    https://valkey.io/download/
+Valkey 50.1.0-rc1  -  Released Tue 14 July 2026
+-----------------------------------------------
 
-More information is available at https://valkey.io
+Upgrade urgency LOW: This is the first release candidate of Valkey 50.1.0.
 
-Happy hacking!
+### Bug Fixes
+* Fix a memory leak when a cluster failover is aborted mid-sync by @BChan-0 (#63)
+
+### Observability and Logging
+* Report the number of active connection listeners via `listener_count` in the `INFO` server section by @BChan-0 (#62)
+
+### Contributors
+* Bonnie Chan @BChan-0
