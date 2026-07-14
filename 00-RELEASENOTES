@@ -11,6 +11,11 @@ Upgrade urgency levels:
 | CRITICAL | There is a critical bug affecting MOST USERS. Upgrade ASAP.         |
 | SECURITY | There are security fixes in the release.                            |
 
+Valkey 50.1.0 GA  -  Released Tue 14 July 2026
+----------------------------------------------
+
+Upgrade urgency LOW: This is the first stable release of Valkey 50.1.
+
 Valkey 50.1.0-rc2  -  Released Tue 14 July 2026
 -----------------------------------------------
 
