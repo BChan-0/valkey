@@ -582,7 +582,7 @@ proc write_test_failures {} {
         set test_file [string map {"\\" "\\\\" "\"" "\\\"" "\n" "\\n" "\r" "\\r" "\t" "\\t" "\b" "\\b" "\f" "\\f"} $test_file]
         set error_msg [string map {"\\" "\\\\" "\"" "\\\"" "\n" "\\n" "\r" "\\r" "\t" "\\t" "\b" "\\b" "\f" "\\f"} $error_msg]
 
-        lappend failures "\{\"test_name\":\"$test_name\",\"test_file\":\"$test_file\",\"status\":\"err\",\"error\":\"$error_msg\"\}"
+        lappend failures "\{\"test_name\":\"$test_name\",\"test_file\":\"$test_file\",\"type\":\"assertion\",\"error\":\"$error_msg\"\}"
     }
 
     set outdir [file dirname $::failures_output_file]

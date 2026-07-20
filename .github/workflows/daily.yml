@@ -129,10 +129,17 @@ jobs:
         if: true && !contains(github.event.inputs.skiptests, 'unittest')
         run: |
           if [ -f ./src/unit/valkey-unit-gtests ]; then
-            make test-unit accurate=1
+            cd src/unit && python3 ../../deps/gtest-parallel/gtest_parallel.py \
+              ./valkey-unit-gtests \
+              --dump_json_test_results ../../gtest-results.json \
+              -- --accurate || true
+            cd ../..
           elif [ -f ./src/valkey-unit-tests ]; then
             ./src/valkey-unit-tests --accurate
           fi
+      - name: Extract gtest failures
+        if: always()
+        uses: ./.github/actions/extract-gtest-failures
       - name: install Redis OSS 6.2 server for compatibility testing
         run: |
           cd tests/tmp
@@ -217,10 +224,17 @@ jobs:
         if: true && !contains(github.event.inputs.skiptests, 'unittest')
         run: |
           if [ -f ./src/unit/valkey-unit-gtests ]; then
-            make test-unit accurate=1
+                  cd src/unit && python3 ../../deps/gtest-parallel/gtest_parallel.py \
+              ./valkey-unit-gtests \
+              --dump_json_test_results ../../gtest-results.json \
+              -- --accurate || true
+            cd ../..
           elif [ -f ./src/valkey-unit-tests ]; then
             ./src/valkey-unit-tests --accurate
           fi
+      - name: Extract gtest failures
+        if: always()
+        uses: ./.github/actions/extract-gtest-failures
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures
@@ -325,10 +339,17 @@ jobs:
         if: true && !contains(github.event.inputs.skiptests, 'unittest')
         run: |
           if [ -f ./src/unit/valkey-unit-gtests ]; then
-            make test-unit accurate=1
+            cd src/unit && python3 ../../deps/gtest-parallel/gtest_parallel.py \
+              ./valkey-unit-gtests \
+              --dump_json_test_results ../../gtest-results.json \
+              -- --accurate || true
+            cd ../..
           elif [ -f ./src/valkey-unit-tests ]; then
             ./src/valkey-unit-tests --accurate
           fi
+      - name: Extract gtest failures
+        if: always()
+        uses: ./.github/actions/extract-gtest-failures
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures
@@ -1233,10 +1254,17 @@ jobs:
         if: true && !contains(github.event.inputs.skiptests, 'unittest')
         run: |
           if [ -f ./src/unit/valkey-unit-gtests ]; then
-            make test-unit accurate=1
+            cd src/unit && python3 ../../deps/gtest-parallel/gtest_parallel.py \
+              ./valkey-unit-gtests \
+              --dump_json_test_results ../../gtest-results.json \
+              -- --accurate || true
+            cd ../..
           elif [ -f ./src/valkey-unit-tests ]; then
             ./src/valkey-unit-tests --accurate
           fi
+      - name: Extract gtest failures
+        if: always()
+        uses: ./.github/actions/extract-gtest-failures
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures

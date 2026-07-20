@@ -1,0 +1,59 @@
+name: 'Extract GTest Failures'
+description: 'Parse gtest-parallel JSON results into the test-failures schema'
+runs:
+  using: 'composite'
+  steps:
+    - name: Extract gtest failures to JSON
+      if: always()
+      shell: bash
+      run: |
+        python3 << 'EOF'
+        import json, os
+
+        os.makedirs("test-failures", exist_ok=True)
+        results_file = "test-failures/unittest.json"
+        failures = []
+
+        gtest_json = "gtest-results.json"
+        if not os.path.exists(gtest_json):
+            # No results file means gtest step was skipped or binary not found
+            with open(results_file, "w") as f:
+                json.dump(failures, f)
+            exit(0)
+
+        with open(gtest_json) as f:
+            data = json.load(f)
+
+        # gtest-parallel --dump_json_test_results produces:
+        # {"tests": {"TestSuite.TestName": {"actual": "PASS|FAIL|TIMEOUT", ...}, ...}}
+        # or nested: {"tests": {"Suite": {"Test": {"actual": "...", ...}}}}
+        def walk_tests(node, prefix=""):
+            """Recursively walk the test results structure."""
+            for key, value in node.items():
+                if isinstance(value, dict):
+                    if "actual" in value:
+                        full_name = f"{prefix}{key}" if prefix else key
+                        actual = value.get("actual", "").strip().split()[-1]
+                        if actual in ("FAIL", "TIMEOUT", "CRASH"):
+                            ftype = "unittest" if actual == "FAIL" else "timeout"
+                            failures.append({
+                                "test_name": full_name,
+                                "test_file": "src/unit/valkey-unit-gtests",
+                                "type": ftype,
+                                "error": f"gtest {actual}",
+                            })
+                    else:
+                        new_prefix = f"{prefix}{key}." if prefix else f"{key}."
+                        walk_tests(value, new_prefix)
+
+        tests = data.get("tests", data)
+        walk_tests(tests)
+
+        with open(results_file, "w") as f:
+            json.dump(failures, f, indent=2)
+
+        if failures:
+            print(f"Found {len(failures)} gtest failure(s)")
+        else:
+            print("No gtest failures")
+        EOF

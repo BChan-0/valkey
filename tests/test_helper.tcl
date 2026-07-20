@@ -384,6 +384,7 @@ proc test_server_main {} {
     array set ::clients_start_time {}
     set ::clients_time_history {}
     set ::failed_tests {}
+    set ::failed_tests_context {}
     set ::ok_count 0
     set ::err_count 0
 
@@ -415,6 +416,7 @@ proc test_server_cron {} {
                         set file $::active_clients_file($fd)
                     }
                     lappend ::failed_tests "\[[colorstr red TIMEOUT]\]: $test_name in $file"
+                    lappend ::failed_tests_context [list "timeout" $file]
                     incr ::err_count
                 }
             }
@@ -488,6 +490,11 @@ proc read_from_test_client fd {
         set err "\[[colorstr red $status]\]: $data"
         puts $err
         lappend ::failed_tests $err
+        set ctx_file ""
+        if {[info exist ::active_clients_file($fd)]} {
+            set ctx_file $::active_clients_file($fd)
+        }
+        lappend ::failed_tests_context [list "" $ctx_file]
         incr ::err_count
         set ::active_clients_task($fd) "(ERR) $data"
         if {$::exit_on_failure} {
@@ -501,6 +508,9 @@ proc read_from_test_client fd {
         }
     } elseif {$status eq {exception}} {
         puts "\[[colorstr red $status]\]: $data"
+        lappend ::failed_tests "\[[colorstr red exception]\]: $data"
+        lappend ::failed_tests_context [list "exception" ""]
+        incr ::err_count
         if {[catch {write_test_failures} err]} {
             puts "Warning: Failed to write test failures: $err"
         }
@@ -635,32 +645,76 @@ proc write_test_failures {} {
     }
 
     set failures {}
+    set idx 0
     foreach failed $::failed_tests {
-        if {[string match {*\[*TIMEOUT*\]*} $failed]} continue
-        if {[string match {*Sanitizer error*} $failed]} continue
-        if {[string match {*Valgrind error*} $failed]} continue
-        if {[string match {*Can't start*} $failed]} continue
-        if {[string match {*Check for memory leaks*} $failed]} continue
-
-        set status "err"
+        set type "assertion"
         set test_name ""
         set test_file ""
         set error_msg ""
 
-        if {[regexp {\[(\w+)\]:\s*(.+?)\s+in\s+(tests/\S+\.tcl)\s*(.*)} $failed -> status test_name test_file error_msg]} {
-            # Successfully parsed
+        # Get parallel context (type hint and file) if available
+        set ctx_type ""
+        set ctx_file ""
+        if {$idx < [llength $::failed_tests_context]} {
+            set ctx [lindex $::failed_tests_context $idx]
+            set ctx_type [lindex $ctx 0]
+            set ctx_file [lindex $ctx 1]
+        }
+        incr idx
+
+        # Classify by pattern matching on the failure string
+        if {[string match {*\[*TIMEOUT*\]*} $failed]} {
+            set type "timeout"
+            if {[regexp {\[TIMEOUT\]:\s*(.+?)\s+in\s+(\S+)} $failed -> test_name test_file]} {
+                set error_msg "Test timed out"
+            } else {
+                set test_name ""
+                set test_file $ctx_file
+                set error_msg $failed
+            }
+        } elseif {[string match {*Sanitizer error*} $failed]} {
+            set type "sanitizer"
+            set test_name ""
+            set test_file $ctx_file
+            set error_msg [regsub {^\[.*?\]:\s*} $failed {}]
+        } elseif {[string match {*Valgrind error*} $failed]} {
+            set type "valgrind"
+            set test_name ""
+            set test_file $ctx_file
+            set error_msg [regsub {^\[.*?\]:\s*} $failed {}]
+        } elseif {[string match {*Can't start*} $failed]} {
+            set type "startup"
+            set test_name ""
+            set test_file $ctx_file
+            set error_msg [regsub {^\[.*?\]:\s*} $failed {}]
+        } elseif {[string match {*Check for memory leaks*} $failed]} {
+            set type "memory-leak"
+            set test_name ""
+            set test_file $ctx_file
+            set error_msg [regsub {^\[.*?\]:\s*} $failed {}]
+        } elseif {$ctx_type eq "exception"} {
+            set type "exception"
+            set test_name ""
+            set test_file ""
+            set error_msg [regsub {^\[.*?\]:\s*} $failed {}]
         } else {
-            set test_name $failed
-            set test_file "unknown"
-            set error_msg $failed
+            # Standard assertion failure: parse test_name and test_file
+            set type "assertion"
+            if {[regexp {\[(\w+)\]:\s*(.+?)\s+in\s+(tests/\S+\.tcl)\s*(.*)} $failed -> _status test_name test_file error_msg]} {
+                # Successfully parsed
+            } else {
+                set test_name $failed
+                set test_file "unknown"
+                set error_msg $failed
+            }
         }
 
-        set test_name [string map {"\\" "\\\\" "\"" "\\\"" "\n" "\\n" "\r" "\\r" "\t" "\\t" "\b" "\\b" "\f" "\\f"} $test_name]
-        set test_file [string map {"\\" "\\\\" "\"" "\\\"" "\n" "\\n" "\r" "\\r" "\t" "\\t" "\b" "\\b" "\f" "\\f"} $test_file]
-        set error_msg [string map {"\\" "\\\\" "\"" "\\\"" "\n" "\\n" "\r" "\\r" "\t" "\\t" "\b" "\\b" "\f" "\\f"} $error_msg]
-        set status [string map {"\\" "\\\\" "\"" "\\\"" "\n" "\\n" "\r" "\\r" "\t" "\\t" "\b" "\\b" "\f" "\\f"} $status]
+        # JSON-escape all fields
+        foreach var {test_name test_file error_msg type} {
+            set $var [string map {"\\" "\\\\" "\"" "\\\"" "\n" "\\n" "\r" "\\r" "\t" "\\t" "\b" "\\b" "\f" "\\f"} [set $var]]
+        }
 
-        lappend failures "\{\"test_name\":\"$test_name\",\"test_file\":\"$test_file\",\"status\":\"$status\",\"error\":\"$error_msg\"\}"
+        lappend failures "\{\"test_name\":\"$test_name\",\"test_file\":\"$test_file\",\"type\":\"$type\",\"error\":\"$error_msg\"\}"
     }
 
     set outdir [file dirname $::failures_output_file]
