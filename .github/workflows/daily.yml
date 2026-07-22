@@ -139,7 +139,53 @@ jobs:
           fi
       - name: Extract gtest failures
         if: always()
-        uses: ./.github/actions/extract-gtest-failures
+        shell: bash
+        run: |
+          python3 << 'PYEOF'
+          import json, os
+
+          os.makedirs("test-failures", exist_ok=True)
+          results_file = "test-failures/unittest.json"
+          failures = []
+
+          gtest_json = "gtest-results.json"
+          if not os.path.exists(gtest_json):
+              with open(results_file, "w") as f:
+                  json.dump(failures, f)
+              exit(0)
+
+          with open(gtest_json) as f:
+              data = json.load(f)
+
+          def walk_tests(node, prefix=""):
+              for key, value in node.items():
+                  if isinstance(value, dict):
+                      if "actual" in value:
+                          full_name = f"{prefix}{key}" if prefix else key
+                          actual = value.get("actual", "").strip().split()[-1]
+                          if actual in ("FAIL", "TIMEOUT", "CRASH"):
+                              ftype = "unittest" if actual == "FAIL" else "timeout"
+                              failures.append({
+                                  "test_name": full_name,
+                                  "test_file": "src/unit/valkey-unit-gtests",
+                                  "type": ftype,
+                                  "error": f"gtest {actual}",
+                              })
+                      else:
+                          new_prefix = f"{prefix}{key}." if prefix else f"{key}."
+                          walk_tests(value, new_prefix)
+
+          tests = data.get("tests", data)
+          walk_tests(tests)
+
+          with open(results_file, "w") as f:
+              json.dump(failures, f, indent=2)
+
+          if failures:
+              print(f"Found {len(failures)} gtest failure(s)")
+          else:
+              print("No gtest failures")
+          PYEOF
       - name: install Redis OSS 6.2 server for compatibility testing
         run: |
           cd tests/tmp
@@ -234,7 +280,53 @@ jobs:
           fi
       - name: Extract gtest failures
         if: always()
-        uses: ./.github/actions/extract-gtest-failures
+        shell: bash
+        run: |
+          python3 << 'PYEOF'
+          import json, os
+
+          os.makedirs("test-failures", exist_ok=True)
+          results_file = "test-failures/unittest.json"
+          failures = []
+
+          gtest_json = "gtest-results.json"
+          if not os.path.exists(gtest_json):
+              with open(results_file, "w") as f:
+                  json.dump(failures, f)
+              exit(0)
+
+          with open(gtest_json) as f:
+              data = json.load(f)
+
+          def walk_tests(node, prefix=""):
+              for key, value in node.items():
+                  if isinstance(value, dict):
+                      if "actual" in value:
+                          full_name = f"{prefix}{key}" if prefix else key
+                          actual = value.get("actual", "").strip().split()[-1]
+                          if actual in ("FAIL", "TIMEOUT", "CRASH"):
+                              ftype = "unittest" if actual == "FAIL" else "timeout"
+                              failures.append({
+                                  "test_name": full_name,
+                                  "test_file": "src/unit/valkey-unit-gtests",
+                                  "type": ftype,
+                                  "error": f"gtest {actual}",
+                              })
+                      else:
+                          new_prefix = f"{prefix}{key}." if prefix else f"{key}."
+                          walk_tests(value, new_prefix)
+
+          tests = data.get("tests", data)
+          walk_tests(tests)
+
+          with open(results_file, "w") as f:
+              json.dump(failures, f, indent=2)
+
+          if failures:
+              print(f"Found {len(failures)} gtest failure(s)")
+          else:
+              print("No gtest failures")
+          PYEOF
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures
@@ -349,7 +441,53 @@ jobs:
           fi
       - name: Extract gtest failures
         if: always()
-        uses: ./.github/actions/extract-gtest-failures
+        shell: bash
+        run: |
+          python3 << 'PYEOF'
+          import json, os
+
+          os.makedirs("test-failures", exist_ok=True)
+          results_file = "test-failures/unittest.json"
+          failures = []
+
+          gtest_json = "gtest-results.json"
+          if not os.path.exists(gtest_json):
+              with open(results_file, "w") as f:
+                  json.dump(failures, f)
+              exit(0)
+
+          with open(gtest_json) as f:
+              data = json.load(f)
+
+          def walk_tests(node, prefix=""):
+              for key, value in node.items():
+                  if isinstance(value, dict):
+                      if "actual" in value:
+                          full_name = f"{prefix}{key}" if prefix else key
+                          actual = value.get("actual", "").strip().split()[-1]
+                          if actual in ("FAIL", "TIMEOUT", "CRASH"):
+                              ftype = "unittest" if actual == "FAIL" else "timeout"
+                              failures.append({
+                                  "test_name": full_name,
+                                  "test_file": "src/unit/valkey-unit-gtests",
+                                  "type": ftype,
+                                  "error": f"gtest {actual}",
+                              })
+                      else:
+                          new_prefix = f"{prefix}{key}." if prefix else f"{key}."
+                          walk_tests(value, new_prefix)
+
+          tests = data.get("tests", data)
+          walk_tests(tests)
+
+          with open(results_file, "w") as f:
+              json.dump(failures, f, indent=2)
+
+          if failures:
+              print(f"Found {len(failures)} gtest failure(s)")
+          else:
+              print("No gtest failures")
+          PYEOF
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures
@@ -1264,7 +1402,53 @@ jobs:
           fi
       - name: Extract gtest failures
         if: always()
-        uses: ./.github/actions/extract-gtest-failures
+        shell: bash
+        run: |
+          python3 << 'PYEOF'
+          import json, os
+
+          os.makedirs("test-failures", exist_ok=True)
+          results_file = "test-failures/unittest.json"
+          failures = []
+
+          gtest_json = "gtest-results.json"
+          if not os.path.exists(gtest_json):
+              with open(results_file, "w") as f:
+                  json.dump(failures, f)
+              exit(0)
+
+          with open(gtest_json) as f:
+              data = json.load(f)
+
+          def walk_tests(node, prefix=""):
+              for key, value in node.items():
+                  if isinstance(value, dict):
+                      if "actual" in value:
+                          full_name = f"{prefix}{key}" if prefix else key
+                          actual = value.get("actual", "").strip().split()[-1]
+                          if actual in ("FAIL", "TIMEOUT", "CRASH"):
+                              ftype = "unittest" if actual == "FAIL" else "timeout"
+                              failures.append({
+                                  "test_name": full_name,
+                                  "test_file": "src/unit/valkey-unit-gtests",
+                                  "type": ftype,
+                                  "error": f"gtest {actual}",
+                              })
+                      else:
+                          new_prefix = f"{prefix}{key}." if prefix else f"{key}."
+                          walk_tests(value, new_prefix)
+
+          tests = data.get("tests", data)
+          walk_tests(tests)
+
+          with open(results_file, "w") as f:
+              json.dump(failures, f, indent=2)
+
+          if failures:
+              print(f"Found {len(failures)} gtest failure(s)")
+          else:
+              print("No gtest failures")
+          PYEOF
       - name: Upload test failures
         if: always()
         uses: ./.github/actions/upload-test-failures
