@@ -28,10 +28,10 @@ on:
         default: ""
       use_repo:
         description: "repo owner and name"
-        default: "valkey-io/valkey"
+        default: "BChan-0/valkey"
       use_git_ref:
         description: "git branch or sha to use"
-        default: "unstable"
+        default: "failure-detector-expansion"
   workflow_call:
     inputs:
       skipjobs:
@@ -58,12 +58,12 @@ on:
         description: "repo owner and name"
         required: false
         type: string
-        default: "valkey-io/valkey"
+        default: "BChan-0/valkey"
       use_git_ref:
         description: "git branch or sha to use"
         required: false
         type: string
-        default: "unstable"
+        default: "failure-detector-expansion"
 concurrency:
   group: daily-${{ github.head_ref || inputs.use_git_ref || github.event.inputs.use_git_ref || github.ref }}
   cancel-in-progress: ${{ github.event_name != 'pull_request' || github.event.action != 'labeled' }}
