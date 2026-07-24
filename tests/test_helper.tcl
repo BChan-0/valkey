@@ -401,24 +401,33 @@ proc test_server_cron {} {
         set err "\[[colorstr red TIMEOUT]\]: clients state report follows."
         puts $err
         foreach fd $::active_clients {
-            if {[info exist ::active_clients_task($fd)]} {
-                set task $::active_clients_task($fd)
-                set test_name [regsub {^\([^)]*\)\s*} $task {}]
-                set test_name [regsub {\s*\(pid\s+\d+\)\s*$} $test_name {}]
-                if {![string length [string trim $test_name]] && \
-                    [regexp {\(([^()]*)\)$} $task -> tn]} {
-                    set test_name $tn
-                }
-                set test_name [string trim $test_name]
-                if {[string length $test_name]} {
-                    set file {}
-                    if {[info exist ::active_clients_file($fd)]} {
-                        set file $::active_clients_file($fd)
-                    }
-                    lappend ::failed_tests "\[[colorstr red TIMEOUT]\]: $test_name in $file"
-                    lappend ::failed_tests_context [list "timeout" $file]
-                    incr ::err_count
-                }
+            if {![info exist ::active_clients_task($fd)]} {
+                continue
+            }
+            set task $::active_clients_task($fd)
+            set file {}
+            if {[info exist ::active_clients_file($fd)]} {
+                set file $::active_clients_file($fd)
+            }
+            if {[regexp {^\(IN PROGRESS\)\s*(.+)$} $task -> test_name]} {
+                # A test body was running: attribute the timeout to it.
+                # Strip the volatile "(pid N)" suffix some test names carry
+                # so the same timeout has a stable identity across runs.
+                set test_name [string trim [regsub {\s*\(pid\s+\d+\)\s*$} $test_name {}]]
+                lappend ::failed_tests "\[[colorstr red TIMEOUT]\]: $test_name in $file"
+                lappend ::failed_tests_context [list "timeout" $file]
+                incr ::err_count
+            } elseif {[string match {(ERR)*} $task]} {
+                # This client's failure is already in ::failed_tests; the
+                # hang is a consequence of it, not a separate failure. Its
+                # payload is an error blob, not a test name.
+            } elseif {[string length $file]} {
+                # No test body was running (server spawn/kill, between
+                # tests). The task payload (pids, fds) is too volatile to
+                # use as a test name; report the hang against the file.
+                lappend ::failed_tests "\[[colorstr red TIMEOUT]\]: hang in $file (last state: $task)"
+                lappend ::failed_tests_context [list "timeout" $file]
+                incr ::err_count
             }
         }
         show_clients_state
@@ -697,16 +706,18 @@ proc write_test_failures {} {
             set test_name ""
             set test_file ""
             set error_msg [regsub {^\[.*?\]:\s*} $failed {}]
-        } else {
-            # Standard assertion failure: parse test_name and test_file
+        } elseif {[regexp {\[(\w+)\]:\s*(.+?)\s+in\s+(tests/\S+\.tcl)\s*(.*)} $failed -> _status test_name test_file error_msg]} {
+            # Standard assertion failure: [err]: <test_name> in <test_file>
             set type "assertion"
-            if {[regexp {\[(\w+)\]:\s*(.+?)\s+in\s+(tests/\S+\.tcl)\s*(.*)} $failed -> _status test_name test_file error_msg]} {
-                # Successfully parsed
-            } else {
-                set test_name $failed
-                set test_file "unknown"
-                set error_msg $failed
-            }
+        } else {
+            # No known pattern and not the standard assertion format:
+            # classify as exception (the catch-all for unexpected errors)
+            # with no test identity, so the detector groups recurrences by
+            # normalized error text rather than the volatile raw string.
+            set type "exception"
+            set test_name ""
+            set test_file $ctx_file
+            set error_msg [regsub {^\[.*?\]:\s*} $failed {}]
         }
 
         # JSON-escape all fields
