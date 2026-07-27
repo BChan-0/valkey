@@ -190,6 +190,26 @@ jobs:
           else:
               print("No gtest failures")
           PYEOF
+      # Detector-validation dummies (ubuntu only). The fast dummies need a short
+      # --timeout to trip the watchdog quickly; valgrind/sanitizer/macos keep
+      # their long native timeouts via the global --single unit/dummy-memory in
+      # test_args, so the fast dummies cannot ride the shared test step. The
+      # exception dummy exits the whole run the instant it fires, so it must run
+      # in its own invocation, isolated from the timeout dummy.
+      - name: dummy fast failures (assertion, startup, timeout)
+        if: always() && !contains(github.event.inputs.skiptests, 'valkey')
+        run: |
+          ./runtest --timeout 10 --verbose --dump-logs \
+            --failures-output test-failures/dummy-fast.json \
+            --single tests/unit/dummy-assertion.tcl \
+            --single tests/unit/dummy-startup.tcl \
+            --single tests/unit/dummy-timeout.tcl
+      - name: dummy exception failure (isolated)
+        if: always() && !contains(github.event.inputs.skiptests, 'valkey')
+        run: |
+          ./runtest --timeout 60 --verbose --dump-logs \
+            --failures-output test-failures/dummy-exception.json \
+            --single tests/unit/dummy-exception.tcl
       - name: install Redis OSS 6.2 server for compatibility testing
         run: |
           cd tests/tmp
