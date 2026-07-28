@@ -370,14 +370,16 @@ proc spawn_server {executable config_file stdout stderr args} {
     return $pid
 }
 
-# Wait for actual startup, return 1 if port is busy, 0 otherwise
+# Wait for actual startup. Returns "started" once the server is up,
+# "port_busy" if the port was taken so the caller can retry on another one, or
+# "reported" if startup failed and the failure was already sent to the test
+# server. The caller must not report a "reported" failure again.
 proc wait_server_started {executable config_file stdout stderr pid} {
     set checkperiod 100; # Milliseconds
     set maxiter [expr {120*1000/$checkperiod}] ; # Wait up to 2 minutes.
-    set port_busy 0
     while 1 {
         if {[regexp -- " PID: $pid.*Server initialized" [exec cat $stdout]]} {
-            break
+            return "started"
         }
         after $checkperiod
         incr maxiter -1
@@ -386,24 +388,24 @@ proc wait_server_started {executable config_file stdout stderr pid} {
             puts "--- LOG CONTENT ---"
             puts [exec cat $stdout]
             puts "-------------------"
-            break
+            return "reported"
         }
 
         # Check if the port is actually busy and the server failed
         # for this reason.
         if {[regexp {Failed listening on port} [exec cat $stdout]]} {
-            set port_busy 1
-            break
+            return "port_busy"
         }
 
         # Configuration errors are unexpected, but it's helpful to fail fast
-        # to give the feedback to the test runner.
+        # to give the feedback to the test runner. Report the server's own
+        # stderr rather than a generic message: it names the offending
+        # directive, which is what tells two config failures apart.
         if {[regexp {FATAL CONFIG FILE ERROR} [exec cat $stderr]]} {
-            start_server_error $executable $config_file "Configuration issue prevented Valkey startup"
-            break
+            start_server_error $executable $config_file [exec cat $stderr]
+            return "reported"
         }
     }
-    return $port_busy
 }
 
 proc dump_server_log {srv} {
@@ -671,12 +673,18 @@ proc start_server {options {code undefined}} {
         set pid [spawn_server $executable $config_file $stdout $stderr $args]
 
         # check that the server actually started
-        set port_busy [wait_server_started $executable $config_file $stdout $stderr $pid]
+        set startup_status [wait_server_started $executable $config_file $stdout $stderr $pid]
+
+        # The failure is already reported; reporting it again here would file a
+        # second issue for the same dead server.
+        if {$startup_status eq "reported"} {
+            return
+        }
 
         # Sometimes we have to try a different port, even if we checked
         # for availability. Other test clients may grab the port before we
         # are able to do it for example.
-        if {$port_busy} {
+        if {$startup_status eq "port_busy"} {
             puts "Port $port was already busy, trying another port..."
             set port [find_available_port $::baseport $::portcount]
             if {$::tls} {
