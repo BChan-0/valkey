@@ -4,8 +4,8 @@
 # catch, which reports it to the test server as an "exception" failure.
 # This triggers the "exception" failure type in the JSON artifact.
 #
-# NOTE: the exception handler kills all clients and ends the whole run,
-# so schedule this file LAST (after the other dummy failure files).
+# The exception handler kills all clients and ends the whole run, so schedule
+# this file last, after the other dummy failure files.
 
 start_server {tags {"dummy"}} {
     test "dummy-exception - intentional runtime exception" {

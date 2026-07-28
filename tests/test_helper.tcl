@@ -384,7 +384,6 @@ proc test_server_main {} {
     array set ::clients_start_time {}
     set ::clients_time_history {}
     set ::failed_tests {}
-    set ::failed_tests_context {}
     set ::ok_count 0
     set ::err_count 0
 
@@ -414,8 +413,7 @@ proc test_server_cron {} {
                 # Strip the volatile "(pid N)" suffix some test names carry
                 # so the same timeout has a stable identity across runs.
                 set test_name [string trim [regsub {\s*\(pid\s+\d+\)\s*$} $test_name {}]]
-                lappend ::failed_tests "\[[colorstr red TIMEOUT]\]: $test_name in $file"
-                lappend ::failed_tests_context [list "timeout" $file]
+                lappend ::failed_tests [list "\[[colorstr red TIMEOUT]\]: $test_name in $file" "timeout" $file]
                 incr ::err_count
             } elseif {[string match {(ERR)*} $task]} {
                 # This client's failure is already in ::failed_tests; the
@@ -425,8 +423,7 @@ proc test_server_cron {} {
                 # No test body was running (server spawn/kill, between
                 # tests). The task payload (pids, fds) is too volatile to
                 # use as a test name; report the hang against the file.
-                lappend ::failed_tests "\[[colorstr red TIMEOUT]\]: hang in $file (last state: $task)"
-                lappend ::failed_tests_context [list "timeout" $file]
+                lappend ::failed_tests [list "\[[colorstr red TIMEOUT]\]: hang in $file (last state: $task)" "timeout" $file]
                 incr ::err_count
             }
         }
@@ -498,12 +495,11 @@ proc read_from_test_client fd {
     } elseif {$status eq {err}} {
         set err "\[[colorstr red $status]\]: $data"
         puts $err
-        lappend ::failed_tests $err
         set ctx_file ""
         if {[info exist ::active_clients_file($fd)]} {
             set ctx_file $::active_clients_file($fd)
         }
-        lappend ::failed_tests_context [list "" $ctx_file]
+        lappend ::failed_tests [list $err "" $ctx_file]
         incr ::err_count
         set ::active_clients_task($fd) "(ERR) $data"
         if {$::exit_on_failure} {
@@ -517,8 +513,7 @@ proc read_from_test_client fd {
         }
     } elseif {$status eq {exception}} {
         puts "\[[colorstr red $status]\]: $data"
-        lappend ::failed_tests "\[[colorstr red exception]\]: $data"
-        lappend ::failed_tests_context [list "exception" ""]
+        lappend ::failed_tests [list "\[[colorstr red exception]\]: $data" "exception" ""]
         incr ::err_count
         if {[catch {write_test_failures} err]} {
             puts "Warning: Failed to write test failures: $err"
@@ -654,27 +649,28 @@ proc write_test_failures {} {
     }
 
     set failures {}
-    set idx 0
-    foreach failed $::failed_tests {
+    foreach record $::failed_tests {
+        # Each record is {message type-hint file}. The type hint and file are
+        # captured at failure time; classification below refines the type by
+        # matching on the message.
+        set failed [lindex $record 0]
+        set ctx_type [lindex $record 1]
+        set ctx_file [lindex $record 2]
+
+        # Strip ANSI color codes so pattern matching and the regexes below
+        # work whether or not the message was colorized (color_term is on
+        # under an xterm TERM, e.g. local runs).
+        set failed [regsub -all {\x1b\[[0-9;]*m} $failed {}]
+
         set type "assertion"
         set test_name ""
         set test_file ""
         set error_msg ""
 
-        # Get parallel context (type hint and file) if available
-        set ctx_type ""
-        set ctx_file ""
-        if {$idx < [llength $::failed_tests_context]} {
-            set ctx [lindex $::failed_tests_context $idx]
-            set ctx_type [lindex $ctx 0]
-            set ctx_file [lindex $ctx 1]
-        }
-        incr idx
-
         # Classify by pattern matching on the failure string
         if {[string match {*\[*TIMEOUT*\]*} $failed]} {
             set type "timeout"
-            if {[regexp {\[TIMEOUT\]:\s*(.+?)\s+in\s+(\S+)} $failed -> test_name test_file]} {
+            if {[regexp {\[TIMEOUT\]:\s*(.+?)\s+in\s+(tests/\S+\.tcl)} $failed -> test_name test_file]} {
                 set error_msg "Test timed out"
             } else {
                 set test_name ""
@@ -753,8 +749,8 @@ proc the_end {} {
 
     if {[llength $::failed_tests]} {
         puts "\n[colorstr bold-red {!!! WARNING}] The following tests failed:\n"
-        foreach failed $::failed_tests {
-            puts "*** $failed"
+        foreach record $::failed_tests {
+            puts "*** [lindex $record 0]"
         }
         if {!$::dont_clean} cleanup
         exit 1

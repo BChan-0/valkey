@@ -4,7 +4,6 @@ runs:
   using: 'composite'
   steps:
     - name: Extract gtest failures to JSON
-      if: always()
       shell: bash
       run: |
         python3 << 'EOF'
@@ -33,9 +32,16 @@ runs:
                 if isinstance(value, dict):
                     if "actual" in value:
                         full_name = f"{prefix}{key}" if prefix else key
-                        actual = value.get("actual", "").strip().split()[-1]
+                        # "actual" accumulates one token per attempt ("FAIL
+                        # FAIL PASS"); the last token is the final outcome.
+                        # It can be empty for a test interrupted before any
+                        # attempt, which must not abort the whole extraction.
+                        outcomes = value.get("actual", "").split()
+                        if not outcomes:
+                            continue
+                        actual = outcomes[-1]
                         if actual in ("FAIL", "TIMEOUT", "CRASH"):
-                            ftype = "unittest" if actual == "FAIL" else "timeout"
+                            ftype = {"FAIL": "unittest", "TIMEOUT": "timeout", "CRASH": "exception"}[actual]
                             failures.append({
                                 "test_name": full_name,
                                 "test_file": "src/unit/valkey-unit-gtests",

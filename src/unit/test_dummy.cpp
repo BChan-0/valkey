@@ -7,10 +7,10 @@
 /*
  * Intentional failure suite for the gtest path. It exercises the CI
  * test-failure detector against the GoogleTest unit suite
- * (src/unit/valkey-unit-gtests, run by `make test-unit` in the Daily
- * workflow's "unittest" step and under valgrind in test-valgrind-misc).
+ * (src/unit/valkey-unit-gtests), which the Daily workflow's "unittest"
+ * step runs and whose JSON results feed the extract-gtest-failures action.
  *
- * It is NOT a real test of any code path. Remove it once the detector
+ * This is not a real test of any code path. Remove it once the detector
  * has been validated.
  */
 
