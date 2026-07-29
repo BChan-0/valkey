@@ -1320,3 +1320,28 @@ proc memcmp {string1 string2} {
     }
     return [expr {$len1 - $len2}]
 }
+
+# Escape a string for use as a JSON string value.
+#
+# Beyond the characters with a short escape, every C0 control character has to
+# be escaped: JSON forbids them raw, and one of them anywhere in the file makes
+# the whole file unparseable, so a single odd byte in one message would discard
+# every failure recorded in the run. Failure messages carry server output and
+# memory-tool reports, which do contain control bytes, and an incomplete ANSI
+# sequence survives colour stripping.
+proc json_escape_string {s} {
+    set s [string map {
+        "\\" "\\\\" "\"" "\\\"" "\n" "\\n" "\r" "\\r"
+        "\t" "\\t" "\b" "\\b" "\f" "\\f"
+    } $s]
+    set out ""
+    foreach ch [split $s ""] {
+        scan $ch %c code
+        if {$code < 0x20} {
+            append out [format {\u%04x} $code]
+        } else {
+            append out $ch
+        }
+    }
+    return $out
+}

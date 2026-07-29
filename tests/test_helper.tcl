@@ -667,8 +667,30 @@ proc write_test_failures {} {
         set test_file ""
         set error_msg ""
 
-        # Classify by pattern matching on the failure string
-        if {[string match {*\[*TIMEOUT*\]*} $failed]} {
+        # Strip the leading status tag, e.g. "[err]: ". The character class
+        # matters: with a non-greedy ".*?" the shortest overall match wins and
+        # the trailing "\s*" matches nothing, leaving the separator space at
+        # the front of every stripped message.
+        set stripped [regsub {^\[[^\]]*\]:\s*} $failed {}]
+
+        # Classify the failure. The type hint captured at failure time is
+        # authoritative and is checked first: the message text of an exception
+        # can contain any of the markers below (a stacktrace that quotes a
+        # startup failure would otherwise be filed as a startup failure).
+        #
+        # The timeout marker is matched anchored rather than as a loose glob.
+        # "*\[*TIMEOUT*\]*" only needs some "[", then TIMEOUT, then some "]",
+        # and those brackets need not be the same token: a real assertion in a
+        # test whose name contains TIMEOUT (there are two in
+        # tests/unit/moduleapi/blockonkeys.tcl) supplies the "[" from "[err]:"
+        # and a "]" from the assertion detail, so it was filed as a timeout
+        # with no test identity.
+        if {$ctx_type eq "exception"} {
+            set type "exception"
+            set test_name ""
+            set test_file ""
+            set error_msg $stripped
+        } elseif {[regexp {^\[TIMEOUT\]:} $failed]} {
             set type "timeout"
             if {[regexp {\[TIMEOUT\]:\s*(.+?)\s+in\s+(tests/\S+\.tcl)} $failed -> test_name test_file]} {
                 set error_msg "Test timed out"
@@ -677,31 +699,26 @@ proc write_test_failures {} {
                 set test_file $ctx_file
                 set error_msg $failed
             }
-        } elseif {[string match {*Sanitizer error*} $failed]} {
-            set type "sanitizer"
-            set test_name ""
-            set test_file $ctx_file
-            set error_msg [regsub {^\[.*?\]:\s*} $failed {}]
         } elseif {[string match {*Valgrind error*} $failed]} {
             set type "valgrind"
             set test_name ""
             set test_file $ctx_file
-            set error_msg [regsub {^\[.*?\]:\s*} $failed {}]
+            set error_msg $stripped
+        } elseif {[string match {*Sanitizer error*} $failed]} {
+            set type "sanitizer"
+            set test_name ""
+            set test_file $ctx_file
+            set error_msg $stripped
         } elseif {[string match {*Can't start*} $failed]} {
             set type "startup"
             set test_name ""
             set test_file $ctx_file
-            set error_msg [regsub {^\[.*?\]:\s*} $failed {}]
+            set error_msg $stripped
         } elseif {[string match {*Check for memory leaks*} $failed]} {
             set type "memory-leak"
             set test_name ""
             set test_file $ctx_file
-            set error_msg [regsub {^\[.*?\]:\s*} $failed {}]
-        } elseif {$ctx_type eq "exception"} {
-            set type "exception"
-            set test_name ""
-            set test_file ""
-            set error_msg [regsub {^\[.*?\]:\s*} $failed {}]
+            set error_msg $stripped
         } elseif {[regexp {\[(\w+)\]:\s*(.+?)\s+in\s+(tests/\S+\.tcl)\s*(.*)} $failed -> _status test_name test_file error_msg]} {
             # Standard assertion failure: [err]: <test_name> in <test_file>
             set type "assertion"
@@ -713,12 +730,12 @@ proc write_test_failures {} {
             set type "exception"
             set test_name ""
             set test_file $ctx_file
-            set error_msg [regsub {^\[.*?\]:\s*} $failed {}]
+            set error_msg $stripped
         }
 
         # JSON-escape all fields
         foreach var {test_name test_file error_msg type} {
-            set $var [string map {"\\" "\\\\" "\"" "\\\"" "\n" "\\n" "\r" "\\r" "\t" "\\t" "\b" "\\b" "\f" "\\f"} [set $var]]
+            set $var [json_escape_string [set $var]]
         }
 
         lappend failures "\{\"test_name\":\"$test_name\",\"test_file\":\"$test_file\",\"type\":\"$type\",\"error\":\"$error_msg\"\}"
@@ -729,6 +746,10 @@ proc write_test_failures {} {
         file mkdir $outdir
     }
     set fp [open $::failures_output_file w]
+    # JSON is UTF-8. Without this the channel uses the system encoding, which
+    # the container jobs leave at iso8859-1, and a non-ASCII byte in a message
+    # is then written as a latin-1 byte the consumer cannot decode.
+    fconfigure $fp -encoding utf-8
     puts $fp "\[[join $failures ","]\]"
     close $fp
 }
