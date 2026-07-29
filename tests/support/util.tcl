@@ -1325,7 +1325,7 @@ proc memcmp {string1 string2} {
 #
 # Beyond the characters with a short escape, every C0 control character has to
 # be escaped: JSON forbids them raw, and one of them anywhere in the file makes
-# the whole file unparseable, so a single odd byte in one message would discard
+# the whole file unparsable, so a single odd byte in one message would discard
 # every failure recorded in the run. Failure messages carry server output and
 # memory-tool reports, which do contain control bytes, and an incomplete ANSI
 # sequence survives colour stripping.

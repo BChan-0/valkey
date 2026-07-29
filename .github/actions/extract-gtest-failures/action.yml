@@ -13,46 +13,81 @@ runs:
         results_file = "test-failures/unittest.json"
         failures = []
 
-        gtest_json = "gtest-results.json"
-        if not os.path.exists(gtest_json):
-            # No results file means gtest step was skipped or binary not found
+        def write_and_exit(message):
+            """Record no failures and stop, leaving the suite file in place.
+
+            Every exit writes the file. The consolidate step reads each suite
+            file, so bailing out without one would drop the whole unittest
+            suite from the artifact with nothing to say why.
+            """
             with open(results_file, "w") as f:
-                json.dump(failures, f)
+                json.dump([], f)
+            print(message)
             exit(0)
 
-        with open(gtest_json) as f:
-            data = json.load(f)
+        gtest_json = "gtest-results.json"
+        if not os.path.exists(gtest_json):
+            write_and_exit("No gtest results file; the gtest step was skipped.")
+
+        # gtest-parallel writes the dump only once, after every test finishes,
+        # so a run killed partway through (OOM, job timeout) leaves it empty or
+        # truncated. That says nothing about whether tests failed, so report it
+        # and move on rather than failing the step.
+        try:
+            with open(gtest_json) as f:
+                data = json.load(f)
+        except (OSError, ValueError) as exc:
+            write_and_exit(f"Could not read {gtest_json}: {exc}")
+
+        if not isinstance(data, dict):
+            write_and_exit(
+                f"Unexpected {gtest_json} format: expected an object, got "
+                f"{type(data).__name__}."
+            )
 
         # gtest-parallel --dump_json_test_results produces:
         # {"tests": {"TestSuite.TestName": {"actual": "PASS|FAIL|TIMEOUT", ...}, ...}}
         # or nested: {"tests": {"Suite": {"Test": {"actual": "...", ...}}}}
+        # gtest-parallel records one of PASS, FAIL, or TIMEOUT per attempt.
+        FAILURE_TYPES = {"FAIL": "unittest", "TIMEOUT": "timeout"}
+
         def walk_tests(node, prefix=""):
             """Recursively walk the test results structure."""
             for key, value in node.items():
-                if isinstance(value, dict):
-                    if "actual" in value:
-                        full_name = f"{prefix}{key}" if prefix else key
-                        # "actual" accumulates one token per attempt ("FAIL
-                        # FAIL PASS"); the last token is the final outcome.
-                        # It can be empty for a test interrupted before any
-                        # attempt, which must not abort the whole extraction.
-                        outcomes = value.get("actual", "").split()
-                        if not outcomes:
-                            continue
-                        actual = outcomes[-1]
-                        if actual in ("FAIL", "TIMEOUT", "CRASH"):
-                            ftype = {"FAIL": "unittest", "TIMEOUT": "timeout", "CRASH": "exception"}[actual]
-                            failures.append({
-                                "test_name": full_name,
-                                "test_file": "src/unit/valkey-unit-gtests",
-                                "type": ftype,
-                                "error": f"gtest {actual}",
-                            })
-                    else:
-                        new_prefix = f"{prefix}{key}." if prefix else f"{key}."
-                        walk_tests(value, new_prefix)
+                if not isinstance(value, dict):
+                    continue
+                if "actual" not in value:
+                    new_prefix = f"{prefix}{key}." if prefix else f"{key}."
+                    walk_tests(value, new_prefix)
+                    continue
+                full_name = f"{prefix}{key}" if prefix else key
+                # "actual" accumulates one token per attempt ("FAIL FAIL
+                # PASS"); the last token is the final outcome, so a test that
+                # passed on retry is not reported. It can be empty for a test
+                # interrupted before any attempt, and a non-string if the dump
+                # is damaged; neither may abort the whole extraction.
+                actual_field = value.get("actual")
+                if not isinstance(actual_field, str):
+                    continue
+                outcomes = actual_field.split()
+                if not outcomes:
+                    continue
+                ftype = FAILURE_TYPES.get(outcomes[-1])
+                if ftype is None:
+                    continue
+                failures.append({
+                    "test_name": full_name,
+                    "test_file": "src/unit/valkey-unit-gtests",
+                    "type": ftype,
+                    "error": f"gtest {outcomes[-1]}",
+                })
 
         tests = data.get("tests", data)
+        if not isinstance(tests, dict):
+            write_and_exit(
+                f"Unexpected {gtest_json} tests field: expected an object, got "
+                f"{type(tests).__name__}."
+            )
         walk_tests(tests)
 
         with open(results_file, "w") as f:
