@@ -2266,6 +2266,7 @@ jobs:
           import json, glob, os
 
           merged = {}
+          damaged = []
 
           for job_dir in sorted(glob.glob("individual-failures/test-failures-*")):
               job_name = os.path.basename(job_dir).replace("test-failures-", "")
@@ -2273,8 +2274,17 @@ jobs:
 
               for suite_file in glob.glob(os.path.join(job_dir, "*.json")):
                   suite_name = os.path.splitext(os.path.basename(suite_file))[0]
-                  with open(suite_file) as f:
-                      data = json.load(f)
+                  # Read each suite independently. One damaged file (a job killed
+                  # mid-write, a truncated upload) must not abort the merge: that
+                  # would leave no consolidated artifact at all and discard every
+                  # other job's failures along with it.
+                  try:
+                      with open(suite_file) as f:
+                          data = json.load(f)
+                  except (OSError, ValueError) as exc:
+                      damaged.append(f"{job_name}/{suite_name}: {exc}")
+                      print(f"{job_name}/{suite_name}: unreadable, skipped ({exc})")
+                      continue
                   merged[job_name][suite_name] = data
                   count = len(data)
                   if count:
@@ -2284,6 +2294,12 @@ jobs:
 
           with open("all-test-failures.json", "w") as f:
               json.dump(merged, f, indent=2)
+
+          if damaged:
+              # Surface the loss rather than letting a green consolidate step
+              # imply the artifact is complete.
+              print(f"::warning::{len(damaged)} suite file(s) could not be read "
+                    f"and are missing from the artifact: {'; '.join(damaged)}")
           EOF
 
       - name: Upload consolidated failures
