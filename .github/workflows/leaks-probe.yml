@@ -1,0 +1,77 @@
+name: Leaks Symbolication Probe
+
+# Throwaway experiment: does /usr/bin/leaks name the allocation site when the
+# server runs with MallocStackLogging enabled? The macOS leak reports the
+# detector receives today carry only a bare address, which gives one leak an
+# identity per test file that exposes it. Delete this workflow once the answer
+# is recorded.
+
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  probe:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build
+        run: make -j3 SERVER_CFLAGS='-g'
+
+      - name: leak a known allocation and report, with and without stack logging
+        run: |
+          set -u
+          probe() {
+            label="$1"; shift
+            echo "=================================================="
+            echo "PROBE: $label"
+            echo "=================================================="
+            # Start the server under whatever env the caller set, leak one sds
+            # via DEBUG LEAK, then ask leaks about the live process.
+            "$@" ./src/valkey-server --port 7777 --daemonize no &
+            server_pid=$!
+            for _ in $(seq 1 30); do
+              ./src/valkey-cli -p 7777 ping 2>/dev/null | grep -q PONG && break
+              sleep 1
+            done
+            ./src/valkey-cli -p 7777 debug leak "intentional-leak-for-detector-testing" || true
+            # leaks exits non-zero when it finds leaks; that is the expected case.
+            leaks "$server_pid" > "leaks-$label.txt" 2>&1 || true
+            ./src/valkey-cli -p 7777 shutdown nosave 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+
+            echo "--- ROOT LEAK lines ---"
+            grep -E "ROOT LEAK" "leaks-$label.txt" || echo "(none found)"
+            echo "--- does any root line name a symbol? ---"
+            if grep -qE "ROOT LEAK:.*<.*\bin [A-Za-z_]" "leaks-$label.txt"; then
+              echo "SYMBOLICATED=yes"
+            else
+              echo "SYMBOLICATED=no"
+            fi
+            echo
+          }
+
+          probe baseline env
+          probe stacklogging env MallocStackLogging=1
+          probe stackloggingnocompact env MallocStackLogging=1 MallocStackLoggingNoCompact=1
+
+          echo "=================================================="
+          echo "SUMMARY"
+          echo "=================================================="
+          for f in leaks-*.txt; do
+            if grep -qE "ROOT LEAK:.*<.*\bin [A-Za-z_]" "$f"; then
+              echo "$f: SYMBOLICATED"
+            else
+              echo "$f: bare address only"
+            fi
+          done
+
+      - name: upload raw reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: leaks-probe-reports
+          path: leaks-*.txt
