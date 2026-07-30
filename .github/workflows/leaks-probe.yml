@@ -36,6 +36,7 @@ jobs:
             (
               for assignment in "$@"; do export "$assignment"; done
               exec ./src/valkey-server --port 7777 --daemonize no \
+                --enable-debug-command yes \
                 > "server-$label.log" 2>&1
             ) &
             for _ in $(seq 1 30); do
