@@ -29,43 +29,50 @@ jobs:
             echo "=================================================="
             echo "PROBE: $label"
             echo "=================================================="
-            # Start the server under whatever env the caller set, leak one sds
-            # via DEBUG LEAK, then ask leaks about the live process.
-            "$@" ./src/valkey-server --port 7777 --daemonize no &
-            server_pid=$!
+            # Env vars are exported inside the subshell rather than passed
+            # through a wrapper command, so the pid read below is the server's
+            # own. A wrapper's pid reports no leaks, since the leak lives in the
+            # process it exec'd.
+            (
+              for assignment in "$@"; do export "$assignment"; done
+              exec ./src/valkey-server --port 7777 --daemonize no \
+                > "server-$label.log" 2>&1
+            ) &
             for _ in $(seq 1 30); do
               ./src/valkey-cli -p 7777 ping 2>/dev/null | grep -q PONG && break
               sleep 1
             done
-            ./src/valkey-cli -p 7777 debug leak "intentional-leak-for-detector-testing" || true
-            # leaks exits non-zero when it finds leaks; that is the expected case.
-            leaks "$server_pid" > "leaks-$label.txt" 2>&1 || true
-            ./src/valkey-cli -p 7777 shutdown nosave 2>/dev/null || true
-            wait "$server_pid" 2>/dev/null || true
+            pid=$(./src/valkey-cli -p 7777 info server | tr -d '\r' | sed -n 's/^process_id://p')
+            echo "server pid: ${pid:-UNKNOWN}"
+            echo "leak command: $(./src/valkey-cli -p 7777 debug leak "intentional-leak-for-detector-testing" 2>&1)"
 
+            leaks "$pid" > "leaks-$label.txt" 2>&1 || true
+            echo "totals: $(grep -E "leaks? for" "leaks-$label.txt" || echo '(none)')"
             echo "--- ROOT LEAK lines ---"
             grep -E "ROOT LEAK" "leaks-$label.txt" || echo "(none found)"
-            echo "--- does any root line name a symbol? ---"
             if grep -qE "ROOT LEAK:.*<.*\bin [A-Za-z_]" "leaks-$label.txt"; then
               echo "SYMBOLICATED=yes"
             else
               echo "SYMBOLICATED=no"
             fi
+            ./src/valkey-cli -p 7777 shutdown nosave 2>/dev/null || true
+            sleep 2
             echo
           }
 
-          probe baseline env
-          probe stacklogging env MallocStackLogging=1
-          probe stackloggingnocompact env MallocStackLogging=1 MallocStackLoggingNoCompact=1
+          probe baseline
+          probe stacklogging MallocStackLogging=1
+          probe stackloggingnocompact MallocStackLogging=1 MallocStackLoggingNoCompact=1
 
           echo "=================================================="
-          echo "SUMMARY"
+          echo "RESULT"
           echo "=================================================="
           for f in leaks-*.txt; do
+            roots=$(grep -cE "ROOT LEAK" "$f" || true)
             if grep -qE "ROOT LEAK:.*<.*\bin [A-Za-z_]" "$f"; then
-              echo "$f: SYMBOLICATED"
+              echo "$f: root_lines=$roots SYMBOLICATED"
             else
-              echo "$f: bare address only"
+              echo "$f: root_lines=$roots bare-address-only"
             fi
           done
 
@@ -74,4 +81,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: leaks-probe-reports
-          path: leaks-*.txt
+          path: |
+            leaks-*.txt
+            server-*.log
